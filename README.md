@@ -12,27 +12,27 @@
 
 ### 💻 基本ツール (Basic Tools)
 
-- [cite_start]**VSCode**: コードエディタ
-- [cite_start]**Git**: バージョン管理
+**VSCode**: コードエディタ
+**Git**: バージョン管理
 
 ### 📱 フロントエンド (Frontend)
 
-- [cite_start]**Flutter SDK**: クロスプラットフォーム開発フレームワーク 
-- [cite_start]**Dart**: 開発言語 [cite: 166]
-- [cite_start]**Android Studio**: Androidエミュレータ・ビルド用 
-- [cite_start]**pedometer**: 歩数取得用ライブラリ
-- [cite_start]**Google Fit / Apple Health**: ヘルスケアデータ連携
+**Flutter SDK**: クロスプラットフォーム開発フレームワーク 
+**Dart**: 開発言語 [cite: 166]
+**Android Studio**: Androidエミュレータ・ビルド用 
+**pedometer**: 歩数取得用ライブラリ
+**Google Fit / Apple Health**: ヘルスケアデータ連携
 
 ### ⚙️ バックエンド (Backend)
 
-- [cite_start]**Java (JDK)**: 開発言語 
-- [cite_start]**Spring Boot**: Webフレームワーク 
-- [cite_start]**Firebase**: データベース (Firestore) および認証
+**Java (JDK)**: 開発言語 
+**Spring Boot**: Webフレームワーク 
+**Firebase**: データベース (Firestore) および認証
 
 ### 🤖 AI・API (External Services)
 
-- [cite_start]**Gemini API**: 画像解析・判定ロジック用
-- [cite_start]**OpenAI API**: 画像生成用 (DALL-E等)
+**Gemini API**: 画像解析・判定ロジック用
+**OpenAI API**: 画像生成用 (DALL-E等)
 
 ## 🚀 開発の進め方 (Development Workflow)
 
