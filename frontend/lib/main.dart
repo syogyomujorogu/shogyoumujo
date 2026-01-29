@@ -10,7 +10,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/login_screen.dart';
-import 'screens/home_screen.dart';
+import 'screens/main_home_screen.dart';
 
 // アプリケーション起動時に最初に実行される関数
 Future<void> main() async {
@@ -66,8 +66,8 @@ class ShogyoMujoApp extends StatelessWidget {
           if (session == null) {
             return const LoginScreen();
           } else {
-            // セッションがある = ログイン済み → ホーム画面を表示
-            return const HomeScreen();
+            // セッションがある = ログイン済み → メインホーム画面（ボトムナビ対応）を表示
+            return const MainHomeScreen();
           }
         },
       ),

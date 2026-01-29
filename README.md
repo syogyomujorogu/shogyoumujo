@@ -17,22 +17,147 @@
 
 ### 📱 フロントエンド (Frontend)
 
-**Flutter SDK**: クロスプラットフォーム開発フレームワーク 
+**Flutter SDK**: クロスプラットフォーム開発フレームワーク
 **Dart**: 開発言語 [cite: 166]
-**Android Studio**: Androidエミュレータ・ビルド用 
+**Android Studio**: Androidエミュレータ・ビルド用
 **pedometer**: 歩数取得用ライブラリ
 **Google Fit / Apple Health**: ヘルスケアデータ連携
 
 ### ⚙️ バックエンド (Backend)
 
-**Java (JDK)**: 開発言語 
-**Spring Boot**: Webフレームワーク 
+**Java (JDK)**: 開発言語
+**Spring Boot**: Webフレームワーク
 **Firebase**: データベース (Firestore) および認証
 
 ### 🤖 AI・API (External Services)
 
 **Gemini API**: 画像解析・判定ロジック用
 **OpenAI API**: 画像生成用 (DALL-E等)
+
+---
+
+## 📱 アプリの起動方法 (How to Run the App)
+
+### 🖥️ 開発モードでFlutterアプリを起動する
+
+1. **VSCodeで `frontend` フォルダを開く**
+   - `shogyoumujo/frontend` フォルダをVSCodeで開きます
+
+2. **依存パッケージをインストール**
+
+   ```bash
+   flutter pub get
+   ```
+
+3. **エミュレータまたは実機を接続**
+   - Android Studio のエミュレータを起動、または
+   - USB デバッグを有効にした実機をUSBケーブルで接続
+
+4. **アプリを起動**
+   ```bash
+   flutter run
+   ```
+
+   - または、VSCode の「実行とデバッグ」から起動
+   - F5 キーでも起動可能
+
+### 📦 APK（インストールファイル）をビルドする
+
+Android端末にインストール可能なAPKファイルを作成する手順：
+
+1. **ターミナルで `frontend` フォルダに移動**
+
+   ```bash
+   cd shogyoumujo/frontend
+   ```
+
+2. **リリース用APKをビルド**
+
+   ```bash
+   flutter build apk --release
+   ```
+
+3. **完成したAPKファイルの場所**
+
+   ```
+   build/app/outputs/flutter-apk/app-release.apk
+   ```
+
+4. **Android端末へのインストール方法**
+   - APKファイルをAndroid端末に転送（USBケーブル、クラウドストレージ、メールなど）
+   - 端末の「ファイルマネージャー」からAPKファイルをタップ
+   - 「提供元不明のアプリ」のインストールを許可
+   - インストール完了後、アプリを起動
+
+### � app-release.apk のインストールと起動手順（詳細版）
+
+**前提条件：** `flutter build apk --release` でAPKファイルがビルド済みであること
+
+#### 方法1️⃣：USBケーブルでインストール
+
+1. **Android端末のUSBデバッグを有効化**
+   - 端末の「設定」→「デバイス情報」→「ビルド番号」を7回タップして開発者モードを有効化
+   - 「設定」→「開発者向けオプション」→「USBデバッグ」をONにする
+
+2. **端末をPCに接続**
+   - USBケーブルでAndroid端末とPCを接続
+   - 端末に「USBデバッグを許可しますか？」と表示されたら「OK」をタップ
+
+3. **adbコマンドでインストール**
+
+   ```bash
+   cd shogyoumujo/frontend/build/app/outputs/flutter-apk
+   adb install app-release.apk
+   ```
+
+   - または、エクスプローラーでAPKファイルをドラッグ＆ドロップして端末に転送
+
+4. **アプリを起動**
+   - 端末のアプリ一覧から「諸行無常ログ」アイコンをタップ
+
+#### 方法2️⃣：ファイル転送でインストール
+
+1. **APKファイルを端末に転送**
+   - **Google ドライブ/Dropbox**: APKをアップロード → 端末でダウンロード
+   - **メール/LINE**: APKを添付して送信 → 端末で開く
+   - **USBケーブル**: PCと端末を接続 → APKをDownloadsフォルダにコピー
+
+2. **端末で「提供元不明のアプリ」を許可**
+   - Android 8.0以降：
+     - APKファイルをタップ → 「この提供元のアプリを許可」をON
+   - Android 7.1以前：
+     - 「設定」→「セキュリティ」→「提供元不明のアプリ」をON
+
+3. **APKファイルをタップしてインストール**
+   - 「ファイルマネージャー」または「ダウンロード」アプリを開く
+   - `app-release.apk` をタップ
+   - 「インストール」ボタンをタップ
+   - インストール完了まで待つ（数秒～数十秒）
+
+4. **アプリを起動**
+   - 「開く」ボタンをタップ、または
+   - ホーム画面のアプリ一覧から「諸行無常ログ」をタップ
+
+#### 🔐 セキュリティに関する注意
+
+- 初回起動時、カメラ・ストレージ・位置情報などの権限を要求される場合があります
+- 必要に応じて「許可」をタップしてください
+- アプリが正常に動作しない場合は、権限設定を確認してください
+
+### �🔧 ビルドエラーが発生した場合
+
+```bash
+# キャッシュをクリア
+flutter clean
+
+# 依存関係を再インストール
+flutter pub get
+
+# 再ビルド
+flutter build apk --release
+```
+
+---
 
 ## 🚀 開発の進め方 (Development Workflow)
 

@@ -36,47 +36,115 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     // 画面が表示されたときに実行
-    _loadUserData(); // ユーザーデータを読み込む
-    _loadMeals(); // 食事履歴を読み込む
+    _initializeData(); // すべてのデータを読み込む
     _subscribeToChanges(); // データの変更を監視
+  }
+
+  // すべてのデータを読み込む関数（エラーハンドリング付き）
+  Future<void> _initializeData() async {
+    try {
+      print('🔄 データ読み込み開始...');
+
+      // ユーザーデータ読み込み（必須）
+      await _loadUserData();
+      print('✅ ユーザーデータ読み込み成功');
+
+      // 食事データ読み込み（オプション）
+      await _loadMeals();
+      print('✅ 食事データ読み込み成功');
+    } catch (e) {
+      print('❌ データ読み込みエラー: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('⚠️ データの読み込みに失敗: ${e.toString()}'),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } finally {
+      // 必ず isLoading を false にする
+      if (mounted) {
+        setState(() => isLoading = false);
+      }
+    }
   }
 
   // ユーザーデータをSupabaseから取得する関数
   Future<void> _loadUserData() async {
-    // 現在ログイン中のユーザーIDを取得
-    final userId = supabase.auth.currentUser!.id;
+    try {
+      // 現在ログイン中のユーザーIDを取得
+      final userId = supabase.auth.currentUser!.id;
+      print('📝 ユーザーID: $userId でデータを取得中...');
 
-    // usersテーブルから自分のデータを取得
-    final response = await supabase
-        .from('users')
-        .select() // すべてのカラムを選択
-        .eq('user_id', userId) // user_idが一致するレコード
-        .single(); // 1件のみ取得
+      // usersテーブルから自分のデータを取得
+      final response = await supabase
+          .from('users')
+          .select()
+          .eq('user_id', userId)
+          .maybeSingle(); // 1件または0件を取得（エラーしない）
 
-    // 取得したデータを状態に保存し、画面を更新
-    setState(() {
-      userData = response;
-      isLoading = false;
-    });
+      if (response == null) {
+        // ユーザーレコードが存在しない場合、ダミーデータを作成
+        print('⚠️ ユーザーレコードが見つかりません。デフォルトデータを使用します。');
+        if (mounted) {
+          setState(() {
+            userData = {
+              'user_id': userId,
+              'display_name': 'ユーザー',
+              'email': supabase.auth.currentUser?.email ?? '',
+              'photo_url': null,
+              'degraded_photo_url': null,
+              'is_degraded': false,
+              'degrade_level': 0,
+              'current_calories': 0,
+              'current_steps': 0,
+            };
+          });
+        }
+      } else {
+        // データが取得できた場合
+        if (mounted) {
+          setState(() {
+            userData = response;
+          });
+        }
+      }
+    } catch (e) {
+      print('❌ ユーザーデータ読み込みエラー: $e');
+      rethrow;
+    }
   }
 
   // 最近の食事履歴をSupabaseから取得する関数
   Future<void> _loadMeals() async {
-    // 現在ログイン中のユーザーIDを取得
-    final userId = supabase.auth.currentUser!.id;
+    try {
+      // 現在ログイン中のユーザーIDを取得
+      final userId = supabase.auth.currentUser!.id;
 
-    // mealsテーブルから自分の食事データを取得
-    final response = await supabase
-        .from('meals')
-        .select() // すべてのカラムを選択
-        .eq('user_id', userId) // user_idが一致するレコード
-        .order('created_at', ascending: false) // 新しい順に並べ替え
-        .limit(5); // 最新5件のみ取得
+      // mealsテーブルから自分の食事データを取得
+      final response = await supabase
+          .from('meals')
+          .select()
+          .eq('user_id', userId)
+          .order('created_at', ascending: false)
+          .limit(5);
 
-    // 取得したデータを状態に保存し、画面を更新
-    setState(() {
-      meals = List<Map<String, dynamic>>.from(response);
-    });
+      // 取得したデータを状態に保存し、画面を更新
+      if (mounted) {
+        setState(() {
+          meals = List<Map<String, dynamic>>.from(response ?? []);
+        });
+      }
+    } catch (e) {
+      print('⚠️ 食事データ読み込みエラー（スキップ）: $e');
+      // 食事データの読み込みに失敗しても、処理を続ける
+      if (mounted) {
+        setState(() {
+          meals = [];
+        });
+      }
+    }
   }
 
   // Supabaseのリアルタイム機能を使ってデータ変更を監視する関数
@@ -116,7 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final degradeLevel = (userData?['degrade_level'] ?? 0) as int; // 劣化レベル
     final currentCalories = userData?['current_calories'] ?? 0; // 今日のカロリー
     final currentSteps = userData?['current_steps'] ?? 0; // 今日の歩数
-    
+
     // 劣化している場合は劣化顔、そうでなければ通常の顔を表示
     final photoURL = isDegraded
         ? (userData?['degraded_photo_url'] ?? userData?['photo_url'])
@@ -265,7 +333,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 },
               ),
               const SizedBox(height: 12),
-              
+
               // 歩数記録ボタン
               _buildActionButton(
                 context,
@@ -283,7 +351,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 },
               ),
               const SizedBox(height: 12),
-              
+
               // 劣化している場合のみ「慈悲を求める」ボタンを表示
               if (isDegraded)
                 _buildActionButton(
