@@ -4,13 +4,15 @@
 
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
+import 'debug_account_switcher_screen.dart';
 
 final supabase = Supabase.instance.client;
 
 class DebugMenuScreen extends StatefulWidget {
-  const DebugMenuScreen({Key? key}) : super(key: key);
+  const DebugMenuScreen({super.key});
 
   @override
   State<DebugMenuScreen> createState() => _DebugMenuScreenState();
@@ -606,7 +608,7 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
       }
 
       if (unlocked > 0) {
-        _showMessage('${unlocked}件の実績を達成しました！プロフィールで確認してください');
+        _showMessage('$unlocked件の実績を達成しました！プロフィールで確認してください');
       } else {
         _showMessage('すべての実績は既に達成済みです');
       }
@@ -664,7 +666,7 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
         addedItems++;
       }
 
-      _showMessage('${addedItems}種類のアイテムを5個ずつ付与しました');
+      _showMessage('$addedItems種類のアイテムを5個ずつ付与しました');
     } catch (e) {
       _showMessage('エラー: $e');
     } finally {
@@ -886,6 +888,36 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
                   ),
                   const SizedBox(height: 24),
 
+                  // 👤 アカウント管理セクション
+                  const Padding(
+                    padding: EdgeInsets.only(left: 8, top: 8, bottom: 8),
+                    child: Text(
+                      '👤 アカウント管理',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue,
+                      ),
+                    ),
+                  ),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.swap_horiz, color: Colors.blue),
+                      title: const Text('アカウント切り替えツール'),
+                      subtitle: const Text('テストアカウントに簡単に切り替え'),
+                      trailing: const Icon(Icons.arrow_forward),
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const DebugAccountSwitcherScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
                   // 日付選択
                   Card(
                     child: ListTile(
@@ -967,6 +999,10 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
                           TextField(
                             controller: _weightController,
                             keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(
+                                  RegExp(r'^\d{0,3}(\.\d{0,1})?')),
+                            ],
                             decoration: const InputDecoration(
                               labelText: '体重',
                               hintText: '例: 70.5',
@@ -1266,21 +1302,21 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
                       color: Colors.grey.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Column(
+                    child: const Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'ℹ️ 使い方',
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        const SizedBox(height: 8),
-                        const Text('• 日付を選択してから各機能を使用'),
-                        const Text('• 歩数は既存データを上書き'),
-                        const Text('• 体重は新規記録として追加'),
-                        const Text('• 複数日分の歩数生成で一括テスト'),
-                        const Text('• ダミー投稿でフィード表示をテスト'),
-                        const Text('• 個別削除で特定データのみクリア'),
-                        const Text('• 全リセットは取り消せないので注意'),
+                        SizedBox(height: 8),
+                        Text('• 日付を選択してから各機能を使用'),
+                        Text('• 歩数は既存データを上書き'),
+                        Text('• 体重は新規記録として追加'),
+                        Text('• 複数日分の歩数生成で一括テスト'),
+                        Text('• ダミー投稿でフィード表示をテスト'),
+                        Text('• 個別削除で特定データのみクリア'),
+                        Text('• 全リセットは取り消せないので注意'),
                       ],
                     ),
                   ),

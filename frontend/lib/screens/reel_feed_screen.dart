@@ -11,13 +11,15 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'comment_sheet.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'reel_settings_dialog.dart';
 
 // Supabaseクライアントのグローバルインスタンス
 final supabase = Supabase.instance.client;
 
 // リールフィード画面のStatefulWidget
 class ReelFeedScreen extends StatefulWidget {
-  const ReelFeedScreen({Key? key}) : super(key: key);
+  const ReelFeedScreen({super.key});
 
   @override
   State<ReelFeedScreen> createState() => _ReelFeedScreenState();
@@ -26,16 +28,17 @@ class ReelFeedScreen extends StatefulWidget {
 // リールフィード画面の状態管理クラス
 class _ReelFeedScreenState extends State<ReelFeedScreen>
     with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
+  bool _keepAspectRatio = false;
   late PageController _pageController;
   List<Map<String, dynamic>> _meals = []; // 食事投稿のリスト
   bool _isLoading = true;
-  int _currentIndex = 0; // 現在表示されている食事の番号
 
   @override
   bool get wantKeepAlive => true;
 
   @override
   void initState() {
+    _loadReelSettings();
     super.initState();
     print('🟢 ReelFeedScreen: initState呼び出し');
     WidgetsBinding.instance.addObserver(this);
@@ -65,6 +68,21 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
     // 必要なら公式ドキュメントの新APIで実装してください
   }
 
+  Future<void> _loadReelSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _keepAspectRatio = prefs.getBool('reel_keep_aspect_ratio') ?? false;
+    });
+  }
+
+  Future<void> _setKeepAspectRatio(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('reel_keep_aspect_ratio', value);
+    setState(() {
+      _keepAspectRatio = value;
+    });
+  }
+
   /// フレンドの食事投稿を読み込む
   Future<void> _loadMeals() async {
     print('========================================');
@@ -74,46 +92,30 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
       final userId = supabase.auth.currentUser!.id;
       print('🔍 現在のユーザーID: $userId');
 
-      // フレンドリストをfriend_requestsテーブルから取得
-      final friendRequests = await supabase
-          .from('friend_requests')
-          .select('requester_id, target_id')
-          .or('requester_id.eq.$userId,target_id.eq.$userId')
-          .eq('status', 'accepted');
+      // friendsテーブルからフレンドIDを取得
+      final friendsData = await supabase
+          .from('friends')
+          .select('friend_id')
+          .eq('user_id', userId);
+      final friendIds =
+          friendsData.map<String>((row) => row['friend_id'] as String).toList();
 
-      print('🔍 フレンドリクエスト数: ${friendRequests.length}');
-      if (friendRequests.isNotEmpty) {
-        print('🔍 フレンドリクエスト内容: $friendRequests');
-      }
+      // ブロック・ミュートユーザーIDを取得
+      final blockedRows = await supabase
+          .from('blocked_users')
+          .select('blocked_user_id')
+          .eq('user_id', userId);
+      final mutedRows = await supabase
+          .from('muted_users')
+          .select('muted_user_id')
+          .eq('user_id', userId);
+      final blockedIds = blockedRows
+          .map<String>((row) => row['blocked_user_id'] as String)
+          .toSet();
+      final mutedIds = mutedRows
+          .map<String>((row) => row['muted_user_id'] as String)
+          .toSet();
 
-      // 自分以外のユーザーIDを取得
-      final friendIds = <String>[];
-      for (final request in friendRequests) {
-        final requesterId = request['requester_id'] as String;
-        final targetId = request['target_id'] as String;
-
-        if (requesterId == userId) {
-          friendIds.add(targetId);
-        } else {
-          friendIds.add(requesterId);
-        }
-      }
-
-      print('🔍 フレンドID一覧: $friendIds');
-      print('🔍 フレンド数: ${friendIds.length}');
-
-      if (friendIds.isEmpty) {
-        print('⚠️ フレンドが見つかりません - リールは空になります');
-        if (mounted) {
-          setState(() {
-            _isLoading = false;
-            _meals = [];
-          });
-        }
-        return;
-      }
-
-      print('🔍 食事投稿を検索中... (フレンドID: $friendIds)');
       // フレンドの食事投稿を取得（mealテーブルから）
       final meals = await supabase
           .from('meals')
@@ -121,36 +123,35 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
           .inFilter('user_id', friendIds)
           .order('created_at', ascending: false);
 
-      print('========================================');
-      print('🔍 取得した食事投稿数: ${meals.length}');
-      if (meals.isNotEmpty) {
-        print('🔍 最初の投稿のuser_id: ${meals.first['user_id']}');
-      }
+      // ブロック・ミュート除外
+      final filteredMeals = meals.where((meal) {
+        final uid = meal['user_id'] as String?;
+        return uid != null &&
+            !blockedIds.contains(uid) &&
+            !mutedIds.contains(uid);
+      }).toList();
 
       // ユーザー情報を取得
-      if (meals.isNotEmpty) {
+      if (filteredMeals.isNotEmpty) {
         final userIds =
-            meals.map((m) => m['user_id'] as String).toSet().toList();
+            filteredMeals.map((m) => m['user_id'] as String).toSet().toList();
         final users = await supabase
             .from('users')
             .select('user_id, display_name, custom_user_id, photo_url')
             .inFilter('user_id', userIds);
 
-        print('🔍 取得したユーザー数: ${users.length}');
-
         // ユーザー情報をマップに変換
         final userMap = {for (var u in users) u['user_id']: u};
 
         // 食事データにユーザー情報を結合
-        for (var meal in meals) {
+        for (var meal in filteredMeals) {
           meal['user'] = userMap[meal['user_id']];
         }
       }
-      print('========================================');
 
       if (mounted) {
         setState(() {
-          _meals = List<Map<String, dynamic>>.from(meals ?? []);
+          _meals = List<Map<String, dynamic>>.from(filteredMeals);
           _isLoading = false;
         });
       }
@@ -435,12 +436,13 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
     }
 
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('リール'),
+        // 設定アイコンは削除。設定は「我の欄（三本線）」からのみ開けるようにする。
+      ),
       body: PageView.builder(
         controller: _pageController,
         scrollDirection: Axis.vertical,
-        onPageChanged: (index) {
-          setState(() => _currentIndex = index);
-        },
         itemCount: _meals.length,
         itemBuilder: (context, index) {
           final meal = _meals[index];
@@ -469,6 +471,7 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
               meal['id'] as String,
               meal['user_id'] as String,
             ),
+            keepAspectRatio: _keepAspectRatio,
           );
         },
       ),
@@ -478,6 +481,7 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
 
 /// 個別のリールアイテム
 class _ReelItem extends StatefulWidget {
+  final bool keepAspectRatio;
   final String mealId;
   final String userId;
   final String userName;
@@ -504,6 +508,7 @@ class _ReelItem extends StatefulWidget {
     required this.onLikeTap,
     required this.onItemTap,
     this.onCommentTap,
+    this.keepAspectRatio = false,
   });
 
   @override
@@ -513,7 +518,6 @@ class _ReelItem extends StatefulWidget {
 class _ReelItemState extends State<_ReelItem>
     with SingleTickerProviderStateMixin {
   bool _isLiked = false;
-  bool _hasMercy = false;
   late AnimationController _likeAnimationController;
   late Animation<double> _likeScaleAnimation;
 
@@ -570,7 +574,7 @@ class _ReelItemState extends State<_ReelItem>
         if (widget.mealPhotoUrl != null && widget.mealPhotoUrl!.isNotEmpty)
           Image.network(
             widget.mealPhotoUrl!,
-            fit: BoxFit.cover,
+            fit: widget.keepAspectRatio ? BoxFit.contain : BoxFit.cover,
           )
         else
           Container(

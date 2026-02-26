@@ -17,7 +17,7 @@ final supabase = Supabase.instance.client;
 
 // 慈悲リクエスト画面のStatefulWidget
 class MercyRequestScreen extends StatefulWidget {
-  const MercyRequestScreen({Key? key}) : super(key: key);
+  const MercyRequestScreen({super.key});
 
   @override
   State<MercyRequestScreen> createState() => _MercyRequestScreenState();
@@ -51,8 +51,15 @@ class _MercyRequestScreenState extends State<MercyRequestScreen> {
       _userData = userResponse;
     });
 
-    // ========== フレンドリストを取得 ==========
-    final friendIds = List<String>.from(_userData?['friends'] ?? []);
+    // ========== friendsテーブルからフレンドリストを取得 ==========
+    final friendsData = await supabase
+        .from('friends')
+        .select('friend_id')
+        .eq('user_id', userId);
+
+    final friendIds = friendsData
+        .map<String>((row) => row['friend_id'] as String)
+        .toList();
 
     if (friendIds.isNotEmpty) {
       // フレンドのIDリストからユーザー情報を取得
@@ -262,11 +269,11 @@ class _MercyRequestScreenState extends State<MercyRequestScreen> {
 
             // フレンドがいない場合のメッセージ
             if (_friends.isEmpty)
-              Card(
+              const Card(
                 child: Padding(
-                  padding: const EdgeInsets.all(20.0),
+                  padding: EdgeInsets.all(20.0),
                   child: Column(
-                    children: const [
+                    children: [
                       Icon(Icons.people_outline, size: 60, color: Colors.grey),
                       SizedBox(height: 16),
                       Text(

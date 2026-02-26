@@ -19,7 +19,7 @@ final supabase = Supabase.instance.client;
 
 // 歩数記録画面のStatefulWidget
 class StepsScreen extends StatefulWidget {
-  const StepsScreen({Key? key}) : super(key: key);
+  const StepsScreen({super.key});
 
   @override
   State<StepsScreen> createState() => _StepsScreenState();
@@ -267,7 +267,7 @@ class _StepsScreenState extends State<StepsScreen> {
               LinearProgressIndicator(
                 value: _progressToNextRecovery(), // 進捗率
                 backgroundColor: Colors.grey.shade300,
-                valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
                 minHeight: 12,
               ),
               const SizedBox(height: 8),

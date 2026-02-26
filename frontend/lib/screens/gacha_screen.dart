@@ -9,7 +9,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 final supabase = Supabase.instance.client;
 
 class GachaScreen extends StatefulWidget {
-  const GachaScreen({Key? key}) : super(key: key);
+  const GachaScreen({super.key});
 
   @override
   State<GachaScreen> createState() => _GachaScreenState();
@@ -87,6 +87,7 @@ class _GachaScreenState extends State<GachaScreen>
     } catch (e) {
       _showMessage('データの読み込みに失敗: $e');
     } finally {
+      if (!mounted) return;
       setState(() => _isLoading = false);
     }
   }
@@ -189,20 +190,14 @@ class _GachaScreenState extends State<GachaScreen>
       scale: _scaleAnimation,
       child: Dialog(
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(12),
         ),
         child: Container(
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                rarityColor.withOpacity(0.3),
-                rarityColor.withOpacity(0.1),
-              ],
-            ),
+            borderRadius: BorderRadius.circular(12),
+            color: rarityColor.withOpacity(0.1),
+            border: Border.all(color: rarityColor.withOpacity(0.3)),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -223,13 +218,6 @@ class _GachaScreenState extends State<GachaScreen>
                   shape: BoxShape.circle,
                   color: Colors.white,
                   border: Border.all(color: rarityColor, width: 4),
-                  boxShadow: [
-                    BoxShadow(
-                      color: rarityColor.withOpacity(0.5),
-                      blurRadius: 20,
-                      spreadRadius: 5,
-                    ),
-                  ],
                 ),
                 child: Center(
                   child: Text(
@@ -332,10 +320,10 @@ class _GachaScreenState extends State<GachaScreen>
       // エフェクトを適用
       if (effectType == 'calorie_decrease') {
         // カロリー減少（善いアイテム）
-        _showMessage('✨ カロリーが${effectValue}減少しました！');
+        _showMessage('✨ カロリーが$effectValue減少しました！');
       } else if (effectType == 'calorie_increase') {
         // カロリー増加（悪いアイテム）
-        _showMessage('💀 カロリーが${effectValue}増加しました...');
+        _showMessage('💀 カロリーが$effectValue増加しました...');
       }
 
       // 通知を作成
@@ -375,8 +363,10 @@ class _GachaScreenState extends State<GachaScreen>
                     width: double.infinity,
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Colors.purple[700]!, Colors.purple[400]!],
+                      color: Colors.purple.shade50,
+                      border: Border(
+                        bottom:
+                            BorderSide(color: Colors.purple.shade200, width: 2),
                       ),
                     ),
                     child: Column(
@@ -384,7 +374,7 @@ class _GachaScreenState extends State<GachaScreen>
                         const Text(
                           '所持チケット',
                           style: TextStyle(
-                            color: Colors.white,
+                            color: Colors.black87,
                             fontSize: 18,
                           ),
                         ),
@@ -392,24 +382,25 @@ class _GachaScreenState extends State<GachaScreen>
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Text(
-                              '🎫',
-                              style: TextStyle(fontSize: 40),
+                            Icon(
+                              Icons.confirmation_number,
+                              size: 40,
+                              color: Colors.purple.shade400,
                             ),
                             const SizedBox(width: 12),
                             Text(
                               '$_ticketCount',
-                              style: const TextStyle(
-                                color: Colors.white,
+                              style: TextStyle(
+                                color: Colors.purple.shade700,
                                 fontSize: 48,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
                             const SizedBox(width: 8),
-                            const Text(
+                            Text(
                               '枚',
                               style: TextStyle(
-                                color: Colors.white,
+                                color: Colors.grey.shade700,
                                 fontSize: 20,
                               ),
                             ),
@@ -429,19 +420,9 @@ class _GachaScreenState extends State<GachaScreen>
                           height: 200,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            gradient: RadialGradient(
-                              colors: [
-                                Colors.purple[300]!,
-                                Colors.purple[600]!,
-                              ],
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.purple.withOpacity(0.5),
-                                blurRadius: 20,
-                                spreadRadius: 5,
-                              ),
-                            ],
+                            color: Colors.purple.shade400,
+                            border: Border.all(
+                                color: Colors.purple.shade600, width: 4),
                           ),
                           child: Material(
                             color: Colors.transparent,
@@ -457,10 +438,6 @@ class _GachaScreenState extends State<GachaScreen>
                                         mainAxisAlignment:
                                             MainAxisAlignment.center,
                                         children: [
-                                          Text(
-                                            '🎰',
-                                            style: TextStyle(fontSize: 60),
-                                          ),
                                           SizedBox(height: 8),
                                           Text(
                                             'ガチャを回す',

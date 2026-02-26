@@ -10,8 +10,7 @@ final supabase = Supabase.instance.client;
 class FriendProfileScreen extends StatefulWidget {
   final String friendId;
 
-  const FriendProfileScreen({Key? key, required this.friendId})
-      : super(key: key);
+  const FriendProfileScreen({super.key, required this.friendId});
 
   @override
   State<FriendProfileScreen> createState() => _FriendProfileScreenState();
@@ -56,7 +55,7 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
       if (mounted) {
         setState(() {
           _friendData = userData;
-          _friendMeals = List<Map<String, dynamic>>.from(meals ?? []);
+          _friendMeals = List<Map<String, dynamic>>.from(meals);
           _equippedBadge = equippedData?['badges'];
           _isLoading = false;
         });

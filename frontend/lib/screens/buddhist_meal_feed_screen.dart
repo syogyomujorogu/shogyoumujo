@@ -18,7 +18,7 @@ final supabase = Supabase.instance.client;
 
 // 諸行無常ログ（仏教的食事投稿リール）画面のStatefulWidget
 class BuddhistMealFeedScreen extends StatefulWidget {
-  const BuddhistMealFeedScreen({Key? key}) : super(key: key);
+  const BuddhistMealFeedScreen({super.key});
 
   @override
   State<BuddhistMealFeedScreen> createState() => _BuddhistMealFeedScreenState();
@@ -29,7 +29,6 @@ class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
   late PageController _pageController; // リール用ページコントローラー
   List<Map<String, dynamic>> _meals = []; // 食事投稿リスト
   bool _isLoading = true; // ローディング状態
-  int _currentIndex = 0; // 現在表示中の投稿インデックス
 
   @override
   void initState() {
@@ -109,14 +108,32 @@ class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
     setState(() => _isLoading = true);
     try {
       final userId = supabase.auth.currentUser!.id;
-      // 自分のユーザーデータを取得
-      final userData = await supabase
-          .from('users')
-          .select()
-          .eq('user_id', userId)
-          .maybeSingle();
-      final friendIds = List<String>.from(userData?['friends'] ?? []);
+
+      // friendsテーブルからフレンドIDを取得
+      final friendsData = await supabase
+          .from('friends')
+          .select('friend_id')
+          .eq('user_id', userId);
+      final friendIds =
+          friendsData.map<String>((row) => row['friend_id'] as String).toList();
       final ids = [...friendIds, userId];
+
+      // ブロック・ミュートユーザーIDを取得
+      final blockedRows = await supabase
+          .from('blocked_users')
+          .select('blocked_user_id')
+          .eq('user_id', userId);
+      final mutedRows = await supabase
+          .from('muted_users')
+          .select('muted_user_id')
+          .eq('user_id', userId);
+      final blockedIds = blockedRows
+          .map<String>((row) => row['blocked_user_id'] as String)
+          .toSet();
+      final mutedIds = mutedRows
+          .map<String>((row) => row['muted_user_id'] as String)
+          .toSet();
+
       // 友達＋自分の食事投稿を新しい順で取得
       final response = await supabase
           .from('meals')
@@ -124,24 +141,31 @@ class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
               '*, user:users!user_id(display_name, custom_user_id, photo_url)')
           .inFilter('user_id', ids)
           .order('created_at', ascending: false);
-      // 24時間以内の投稿のみフィルタリング
+
+      // 24時間以内＆ブロック・ミュート除外
       final now = DateTime.now().toUtc();
-      final filtered = (response ?? []).where((meal) {
+      final filtered = response.where((meal) {
         final createdAt = DateTime.tryParse(meal['created_at'] ?? '') ?? now;
-        return now.difference(createdAt).inHours < 24;
+        final uid = meal['user_id'] as String?;
+        return now.difference(createdAt).inHours < 24 &&
+            uid != null &&
+            !blockedIds.contains(uid) &&
+            !mutedIds.contains(uid);
       }).toList();
 
       // 各投稿にダイエット統計情報を追加
       final mealsWithStats = filtered.map((meal) {
-        final stats = _calculateDietStats(meal['user_id'], response ?? []);
+        final stats = _calculateDietStats(meal['user_id'], response);
         return {...meal, 'dietStats': stats};
       }).toList();
 
+      if (!mounted) return;
       setState(() {
         _meals = mealsWithStats;
         _isLoading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _meals = [];
         _isLoading = false;
@@ -243,9 +267,9 @@ class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.orange[200]!),
                   ),
-                  child: Column(
+                  child: const Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
+                    children: [
                       Text('📊 表示される統計情報',
                           style: TextStyle(
                               fontWeight: FontWeight.bold, fontSize: 16)),
@@ -274,7 +298,6 @@ class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
         controller: _pageController,
         scrollDirection: Axis.vertical,
         itemCount: _meals.length,
-        onPageChanged: (i) => setState(() => _currentIndex = i),
         itemBuilder: (context, index) {
           final meal = _meals[index];
           final user = meal['user'] ?? {};
@@ -300,27 +323,16 @@ class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
                 child: Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [
-                        Colors.orange.withOpacity(0.9),
-                        Colors.deepOrange.withOpacity(0.85),
-                      ],
-                    ),
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.3),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.orange.shade300),
                   ),
                   child: Column(
                     children: [
                       Text(
-                        '🔥 $displayName の修行状況',
+                        '$displayName の修行状況',
                         style: const TextStyle(
-                          color: Colors.white,
+                          color: Colors.black87,
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
@@ -353,13 +365,13 @@ class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
                           vertical: 8,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
+                          color: Colors.orange.shade100,
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
                           '修行レベル: ${dietStats['effortLevel'] ?? '修行中'}',
                           style: const TextStyle(
-                            color: Colors.white,
+                            color: Colors.orange,
                             fontSize: 14,
                             fontWeight: FontWeight.bold,
                           ),
@@ -502,20 +514,20 @@ class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
   Widget _buildStatItem(String value, String label, IconData icon) {
     return Column(
       children: [
-        Icon(icon, color: Colors.white, size: 24),
+        Icon(icon, color: Colors.orange, size: 24),
         const SizedBox(height: 4),
         Text(
           value,
           style: const TextStyle(
-            color: Colors.white,
+            color: Colors.black87,
             fontSize: 20,
             fontWeight: FontWeight.bold,
           ),
         ),
         Text(
           label,
-          style: const TextStyle(
-            color: Colors.white70,
+          style: TextStyle(
+            color: Colors.grey.shade600,
             fontSize: 12,
           ),
         ),

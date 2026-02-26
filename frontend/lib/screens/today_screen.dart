@@ -15,7 +15,7 @@ import 'weekly_summary_dialog.dart';
 final supabase = Supabase.instance.client;
 
 class TodayScreen extends StatefulWidget {
-  const TodayScreen({Key? key}) : super(key: key);
+  const TodayScreen({super.key});
 
   @override
   State<TodayScreen> createState() => _TodayScreenState();
@@ -107,21 +107,24 @@ class _TodayScreenState extends State<TodayScreen> {
           .gte('created_at', startOfDay.toUtc().toIso8601String())
           .order('created_at', ascending: false);
 
-      // 今日の歩数取得
+      // 今日の歩数取得（steps_historyに統一）
+      final todayDate = startOfDay.toIso8601String().substring(0, 10);
       final stepsResponse = await supabase
-          .from('steps')
+          .from('steps_history')
           .select()
           .eq('user_id', userId)
-          .gte('created_at', startOfDay.toUtc().toIso8601String())
+          .eq('date', todayDate)
           .maybeSingle();
 
+      if (!mounted) return;
       setState(() {
         _userData = userData;
-        _todayMeals = List<Map<String, dynamic>>.from(mealsResponse ?? []);
-        _todaySteps = stepsResponse?['step_count'] ?? 0;
+        _todayMeals = List<Map<String, dynamic>>.from(mealsResponse);
+        _todaySteps = stepsResponse?['steps'] ?? 0;
         _isLoading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() => _isLoading = false);
     }
   }
@@ -161,24 +164,16 @@ class _TodayScreenState extends State<TodayScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(20),
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Colors.orange, Colors.deepOrange],
-                    ),
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.orange.withOpacity(0.3),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.orange.shade200),
                   ),
                   child: Column(
                     children: [
                       const Text(
-                        '🔥 今日の修業進捗',
+                        '今日の修業進捗',
                         style: TextStyle(
-                          color: Colors.white,
+                          color: Colors.black87,
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
                         ),
@@ -192,12 +187,12 @@ class _TodayScreenState extends State<TodayScreen> {
                             children: [
                               const Text(
                                 '歩数',
-                                style: TextStyle(color: Colors.white70),
+                                style: TextStyle(color: Colors.black54),
                               ),
                               Text(
                                 '$_todaySteps / $dailyGoal 歩',
                                 style: const TextStyle(
-                                  color: Colors.white,
+                                  color: Colors.black87,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
@@ -205,13 +200,13 @@ class _TodayScreenState extends State<TodayScreen> {
                           ),
                           const SizedBox(height: 8),
                           ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
+                            borderRadius: BorderRadius.circular(8),
                             child: LinearProgressIndicator(
                               value: stepsProgress,
                               minHeight: 12,
-                              backgroundColor: Colors.white.withOpacity(0.3),
+                              backgroundColor: Colors.grey.shade200,
                               valueColor: const AlwaysStoppedAnimation<Color>(
-                                  Colors.white),
+                                  Colors.orange),
                             ),
                           ),
                         ],
@@ -222,12 +217,12 @@ class _TodayScreenState extends State<TodayScreen> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           const Icon(Icons.restaurant,
-                              color: Colors.white, size: 20),
+                              color: Colors.black54, size: 20),
                           const SizedBox(width: 8),
                           Text(
                             '今日の食事: ${_todayMeals.length}回',
                             style: const TextStyle(
-                              color: Colors.white,
+                              color: Colors.black87,
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
                             ),
@@ -241,7 +236,7 @@ class _TodayScreenState extends State<TodayScreen> {
 
               // 食事記録セクション
               const Text(
-                '📸 今日の食事',
+                '今日の食事',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 12),
@@ -252,33 +247,13 @@ class _TodayScreenState extends State<TodayScreen> {
                 child: ElevatedButton.icon(
                   onPressed: () async {
                     // 時間制限チェック
-                    final now = DateTime.now();
-                    final hour = now.hour;
-
-                    String? mealType;
-                    if (hour >= 6 && hour < 11) {
-                      mealType = '朝食（任意）';
-                    } else if (hour >= 11 && hour < 16) {
-                      mealType = '昼食';
-                    } else if (hour >= 16 && hour < 22) {
-                      mealType = '夕食';
-                    } else {
-                      // 時間外の場合は警告
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('⚠️ 食事の投稿時間外です（6時〜22時）'),
-                          backgroundColor: Colors.orange,
-                        ),
-                      );
-                      return;
-                    }
-
+                    // 時間帯に関わらず常に投稿可能（MealPostSheetで食事タイプを選択可能）
                     await showModalBottomSheet(
                       context: context,
                       isScrollControlled: true,
                       builder: (context) => MealPostSheet(
                         onPosted: _loadTodayData,
-                        mealType: mealType,
+                        mealType: null, // nullにすることで、MealPostSheetで自動判定＋選択可能
                       ),
                     );
                   },
@@ -348,7 +323,7 @@ class _TodayScreenState extends State<TodayScreen> {
 
               // ウォーキングセクション
               const Text(
-                '🚶 今日の歩数',
+                '今日の歩数',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 12),
@@ -358,13 +333,7 @@ class _TodayScreenState extends State<TodayScreen> {
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.grey.withOpacity(0.1),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
+                  border: Border.all(color: Colors.grey.shade200),
                 ),
                 child: Column(
                   children: [

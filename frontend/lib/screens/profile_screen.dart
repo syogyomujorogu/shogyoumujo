@@ -12,21 +12,26 @@
 
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'dart:convert';
+import '../helpers/gemini_helper.dart';
+import 'package:image/image.dart' as img;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'training_completion_dialog.dart';
 import 'debug_menu_screen.dart';
 import 'achievements_screen.dart';
-import 'gacha_screen.dart';
 import 'unified_notifications_screen.dart';
 import 'friend_profile_screen.dart';
+import 'reel_settings_dialog.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // Supabaseクライアントのグローバルインスタンス
 final supabase = Supabase.instance.client;
 
 // プロフィール画面のStatefulWidget
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({Key? key}) : super(key: key);
+  const ProfileScreen({super.key});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -157,7 +162,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 
       if (mounted) {
         setState(() {
-          _mercyRequests = List<Map<String, dynamic>>.from(response ?? []);
+          _mercyRequests = List<Map<String, dynamic>>.from(response);
         });
       }
     } catch (e) {
@@ -175,25 +180,14 @@ class _ProfileScreenState extends State<ProfileScreen>
     try {
       final userId = supabase.auth.currentUser!.id;
 
-      // friend_requestsテーブルから承認済みフレンドを取得
-      final friendRequests = await supabase
-          .from('friend_requests')
-          .select('requester_id, target_id')
-          .or('requester_id.eq.$userId,target_id.eq.$userId')
-          .eq('status', 'accepted');
+      // friendsテーブルからフレンドIDを取得
+      final friendsData = await supabase
+          .from('friends')
+          .select('friend_id')
+          .eq('user_id', userId);
 
-      // 自分以外のユーザーIDを取得
-      final friendIds = <String>[];
-      for (final request in friendRequests) {
-        final requesterId = request['requester_id'] as String;
-        final targetId = request['target_id'] as String;
-
-        if (requesterId == userId) {
-          friendIds.add(targetId);
-        } else {
-          friendIds.add(requesterId);
-        }
-      }
+      final friendIds =
+          friendsData.map<String>((row) => row['friend_id'] as String).toList();
 
       if (friendIds.isEmpty) {
         if (mounted) {
@@ -202,12 +196,13 @@ class _ProfileScreenState extends State<ProfileScreen>
         return;
       }
 
+      // フレンドのユーザー情報を取得
       final response =
           await supabase.from('users').select().inFilter('user_id', friendIds);
 
       if (mounted) {
         setState(() {
-          _friends = List<Map<String, dynamic>>.from(response ?? []);
+          _friends = List<Map<String, dynamic>>.from(response);
         });
       }
     } catch (e) {
@@ -231,7 +226,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 
       if (mounted) {
         setState(() {
-          _myMeals = List<Map<String, dynamic>>.from(response ?? []);
+          _myMeals = List<Map<String, dynamic>>.from(response);
         });
       }
     } catch (e) {
@@ -394,6 +389,7 @@ class _ProfileScreenState extends State<ProfileScreen>
       }
 
       final friendId = friendResponse['user_id'] as String;
+      final friendName = friendResponse['display_name'] ?? 'ユーザー';
 
       // ========== バリデーション ==========
       // 自分自身は追加できない
@@ -401,21 +397,47 @@ class _ProfileScreenState extends State<ProfileScreen>
         throw Exception('自分自身は追加できません');
       }
 
-      // 現在のフレンドリストを取得
-      final currentFriends = List<String>.from(_userData?['friends'] ?? []);
+      // 既にフレンドか確認
+      final isFriendCheck = await supabase
+          .from('friends')
+          .select()
+          .eq('user_id', userId)
+          .eq('friend_id', friendId)
+          .maybeSingle();
 
-      // すでにフレンドの場合
-      if (currentFriends.contains(friendId)) {
+      if (isFriendCheck != null) {
         throw Exception('すでにフレンドです');
       }
 
-      // ========== フレンドリストに追加 ==========
-      currentFriends.add(friendId);
+      // 既に申請済みか確認
+      final existingRequest = await supabase
+          .from('friend_requests')
+          .select()
+          .eq('requester_id', userId)
+          .eq('target_id', friendId)
+          .maybeSingle();
 
-      await supabase.from('users').update({
-        'friends': currentFriends,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('user_id', userId);
+      if (existingRequest != null) {
+        throw Exception('既にフレンド申請を送信済みです');
+      }
+
+      // ========== フレンド申請を送信 ==========
+      await supabase.from('friend_requests').insert({
+        'requester_id': userId,
+        'target_id': friendId,
+        'status': 'pending',
+        'requested_at': DateTime.now().toUtc().toIso8601String(),
+      });
+
+      // 通知を送信
+      final currentUserName = _userData?['display_name'] ?? 'ユーザー';
+      await supabase.from('notifications').insert({
+        'recipient_id': friendId,
+        'sender_id': userId,
+        'notification_type': 'friend_request',
+        'content': {},
+        'message': '$currentUserName さんからフレンド申請が届きました',
+      });
 
       // 入力欄をクリア
       _friendSearchController.clear();
@@ -427,7 +449,7 @@ class _ProfileScreenState extends State<ProfileScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${friendResponse['display_name']} をフレンドに追加しました'),
+            content: Text('$friendName にフレンド申請を送信しました'),
             backgroundColor: Colors.green,
           ),
         );
@@ -442,37 +464,102 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
+  /// 劣化処理（グレースケール化例）
+  Uint8List _degradeImage(Uint8List imageBytes) {
+    final original = img.decodeImage(imageBytes);
+    if (original == null) return imageBytes;
+    final grayscale = img.grayscale(original);
+    return Uint8List.fromList(img.encodeJpg(grayscale));
+  }
+
   /// プロフィール写真をアップロードする関数
   Future<void> _uploadProfilePhoto() async {
     try {
-      // ギャラリーから画像を選択
+      // 選択肢ダイアログ（カメラ or ギャラリー）
+      final source = await showDialog<ImageSource>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('プロフィール写真を選択'),
+          children: [
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, ImageSource.camera),
+              child: const Text('カメラで撮影'),
+            ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, ImageSource.gallery),
+              child: const Text('ギャラリーから選択'),
+            ),
+          ],
+        ),
+      );
+      if (source == null) return;
+
       final XFile? image = await _picker.pickImage(
-        source: ImageSource.gallery,
+        source: source,
         maxWidth: 512,
         maxHeight: 512,
         imageQuality: 85,
       );
-
       if (image == null) return;
 
       // ========== Supabase Storage にアップロード ==========
       final userId = supabase.auth.currentUser!.id;
       final fileName =
           'avatars/$userId/profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
-
       await supabase.storage.from('avatars').upload(
             fileName,
             File(image.path),
           );
-
       // アップロードした画像の公開URLを取得
       final publicUrl = supabase.storage.from('avatars').getPublicUrl(fileName);
-
-      // ========== usersテーブルを更新 ==========
-      await supabase.from('users').update({
-        'photo_url': publicUrl,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('user_id', userId);
+      // ========== Gemini APIでイラスト化 ==========
+      try {
+        final imageBytes = await File(image.path).readAsBytes();
+        final gemini = GeminiHelper();
+        final prompt = '証明写真風の自撮り画像を、アイコン用の優しいイラストに変換してください。';
+        final illustrationText = await gemini.generateFromImageAndText(
+          imageBytes: imageBytes,
+          prompt: prompt,
+        );
+        // Gemini APIレスポンスがbase64画像の場合
+        if (illustrationText.startsWith('data:image')) {
+          final base64Data = illustrationText.split(',').last;
+          final illustrationBytes =
+              Uint8List.fromList(base64Decode(base64Data));
+          // 劣化処理（グレースケール化例）
+          final degradedBytes = _degradeImage(illustrationBytes);
+          // 劣化画像を保存
+          final degradedFileName =
+              'avatars/$userId/degraded_${DateTime.now().millisecondsSinceEpoch}.jpg';
+          final degradedFile = File('${image.path}_degraded.jpg');
+          await degradedFile.writeAsBytes(degradedBytes);
+          await supabase.storage.from('avatars').upload(
+                degradedFileName,
+                degradedFile,
+              );
+          final degradedUrl =
+              supabase.storage.from('avatars').getPublicUrl(degradedFileName);
+          // usersテーブルにdegraded_photo_urlを保存
+          await supabase.from('users').update({
+            'photo_url': publicUrl,
+            'degraded_photo_url': degradedUrl,
+            'is_degraded': true,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          }).eq('user_id', userId);
+        } else {
+          // イラスト画像生成失敗時は通常画像のみ保存
+          await supabase.from('users').update({
+            'photo_url': publicUrl,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          }).eq('user_id', userId);
+        }
+      } catch (e) {
+        // Gemini API失敗時は通常画像のみ保存
+        await supabase.from('users').update({
+          'photo_url': publicUrl,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        }).eq('user_id', userId);
+      }
 
       // データを再読み込み
       await _loadUserData();
@@ -620,6 +707,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                         ],
                       ),
                     ),
+                  const SizedBox(height: 16),
                   if (errorMessage != null) const SizedBox(height: 16),
                   // アカウント名
                   TextField(
@@ -661,6 +749,20 @@ class _ProfileScreenState extends State<ProfileScreen>
               ),
             ),
             actions: [
+              ElevatedButton.icon(
+                icon: const Icon(Icons.image),
+                label: const Text('プロフィールアイコンを変更'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: isLoading
+                    ? null
+                    : () async {
+                        Navigator.pop(context);
+                        await _uploadProfilePhoto();
+                      },
+              ),
               TextButton(
                 onPressed: isLoading ? null : () => Navigator.pop(context),
                 child: const Text('キャンセル'),
@@ -860,8 +962,7 @@ class _ProfileScreenState extends State<ProfileScreen>
           .select();
       print('ℹ️ updateResult: $updateResult');
 
-      if (updateResult == null ||
-          (updateResult is List && updateResult.isEmpty)) {
+      if (updateResult.isEmpty) {
         // レコードがなければ insert
         final insertData = {
           'user_id': currentUserId,
@@ -1001,6 +1102,27 @@ class _ProfileScreenState extends State<ProfileScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // リール表示設定（法輪の設定）
+            ListTile(
+              leading: const Icon(Icons.settings, color: Colors.purple),
+              title: const Text('リール表示設定'),
+              onTap: () async {
+                Navigator.pop(context);
+                final prefs = await SharedPreferences.getInstance();
+                final currentValue =
+                    prefs.getBool('reel_keep_aspect_ratio') ?? false;
+                showDialog(
+                  context: context,
+                  builder: (context) => ReelSettingsDialog(
+                    initialKeepAspectRatio: currentValue,
+                    onChanged: (v) async {
+                      await prefs.setBool('reel_keep_aspect_ratio', v);
+                      setState(() {}); // 画面をリビルドして他画面反映
+                    },
+                  ),
+                );
+              },
+            ),
             if (isOnTraining) ...[
               ListTile(
                 leading: const Icon(Icons.calendar_today, color: Colors.orange),
@@ -1148,243 +1270,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
-  // 自分のデータ統計を表示
-  Future<void> _showMyDataStats() async {
-    try {
-      final userId = supabase.auth.currentUser!.id;
-
-      // 食事データを取得
-      final mealsResponse = await supabase
-          .from('meals')
-          .select()
-          .eq('user_id', userId)
-          .order('created_at', ascending: true);
-
-      final meals = mealsResponse as List;
-
-      // 歩数データを取得
-      final stepsResponse = await supabase
-          .from('steps')
-          .select()
-          .eq('user_id', userId)
-          .order('date', ascending: true);
-
-      final steps = stepsResponse as List;
-
-      // 体重データを取得
-      final weightResponse = await supabase
-          .from('weight_logs')
-          .select()
-          .eq('user_id', userId)
-          .order('created_at', ascending: true);
-
-      final weights = weightResponse as List;
-
-      // 統計を計算
-      final totalMeals = meals.length;
-      final totalSteps =
-          steps.fold<int>(0, (sum, step) => sum + (step['steps'] as int? ?? 0));
-      final avgSteps = steps.isEmpty ? 0 : (totalSteps / steps.length).round();
-
-      // 目標達成率を計算（修業中の場合）
-      int achievedDays = 0;
-      if (_userData?['training_started'] == true) {
-        final dailyGoal = _userData?['training_daily_steps_goal'] ?? 5000;
-        achievedDays = steps.where((step) {
-          final stepCount = step['steps'] as int? ?? 0;
-          return stepCount >= dailyGoal;
-        }).length;
-      }
-
-      final achievementRate =
-          steps.isEmpty ? 0.0 : (achievedDays / steps.length) * 100;
-
-      // 体重変化を計算
-      double? weightChange;
-      if (weights.length >= 2) {
-        final firstWeight = weights.first['weight'] as double?;
-        final lastWeight = weights.last['weight'] as double?;
-        if (firstWeight != null && lastWeight != null) {
-          weightChange = lastWeight - firstWeight;
-        }
-      }
-
-      // 連続記録日数を計算
-      int consecutiveDays = 0;
-      if (meals.isNotEmpty) {
-        final now = DateTime.now();
-        final today = DateTime(now.year, now.month, now.day);
-        DateTime checkDate = today;
-
-        while (true) {
-          final hasRecord = meals.any((meal) {
-            final mealDate = DateTime.parse(meal['created_at']);
-            final mealDay =
-                DateTime(mealDate.year, mealDate.month, mealDate.day);
-            return mealDay == checkDate;
-          });
-
-          if (hasRecord) {
-            consecutiveDays++;
-            checkDate = checkDate.subtract(const Duration(days: 1));
-          } else {
-            break;
-          }
-        }
-      }
-
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Row(
-              children: [
-                const Icon(Icons.analytics, color: Colors.blue),
-                const SizedBox(width: 8),
-                const Text('自分のデータ'),
-              ],
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // 基本統計
-                  _buildStatCard(
-                    '📊 基本統計',
-                    [
-                      _buildStatRow('総食事記録数', '$totalMeals 回'),
-                      _buildStatRow('連続記録日数', '$consecutiveDays 日'),
-                      _buildStatRow('総歩数',
-                          '${totalSteps.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},')} 歩'),
-                      _buildStatRow('平均歩数/日',
-                          '${avgSteps.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},')} 歩'),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-
-                  // 修業統計（修業中の場合）
-                  if (_userData?['training_started'] == true) ...[
-                    _buildStatCard(
-                      '🔥 修業統計',
-                      [
-                        _buildStatRow('目標達成日数', '$achievedDays 日'),
-                        _buildStatRow(
-                            '達成率', '${achievementRate.toStringAsFixed(1)}%'),
-                        _buildProgressBar(achievementRate / 100),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-
-                  // 体重変化
-                  if (weights.isNotEmpty) ...[
-                    _buildStatCard(
-                      '⚖️ 体重記録',
-                      [
-                        _buildStatRow('総記録回数', '${weights.length} 回'),
-                        if (weights.length >= 2 && weightChange != null)
-                          _buildStatRow(
-                            '体重変化',
-                            '${weightChange >= 0 ? '+' : ''}${weightChange.toStringAsFixed(1)} kg',
-                            valueColor:
-                                weightChange < 0 ? Colors.green : Colors.red,
-                          ),
-                        if (weights.isNotEmpty)
-                          _buildStatRow('最新体重', '${weights.last['weight']} kg'),
-                      ],
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('閉じる'),
-              ),
-            ],
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('データ取得エラー: $e')),
-        );
-      }
-    }
-  }
-
-  // 統計カードを構築
-  Widget _buildStatCard(String title, List<Widget> children) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.grey[100],
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 8),
-          ...children,
-        ],
-      ),
-    );
-  }
-
-  // 統計行を構築
-  Widget _buildStatRow(String label, String value, {Color? valueColor}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(fontSize: 14, color: Colors.grey),
-          ),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-              color: valueColor ?? Colors.black,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // プログレスバーを構築
-  Widget _buildProgressBar(double value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: LinearProgressIndicator(
-          value: value,
-          minHeight: 20,
-          backgroundColor: Colors.grey[300],
-          valueColor: AlwaysStoppedAnimation<Color>(
-            value >= 0.8
-                ? Colors.green
-                : (value >= 0.5 ? Colors.orange : Colors.red),
-          ),
-        ),
-      ),
-    );
-  }
-
   // 修業開始ダイアログを表示
   void _showStartTrainingDialog() {
     int selectedSteps = 5000;
@@ -1420,6 +1305,10 @@ class _ProfileScreenState extends State<ProfileScreen>
                 TextField(
                   controller: weightController,
                   keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(
+                        RegExp(r'^\d{0,3}(\.\d{0,1})?')),
+                  ],
                   decoration: InputDecoration(
                     hintText: '例: 70.5',
                     border: const OutlineInputBorder(),
@@ -1497,7 +1386,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                 DropdownButton<int>(
                   isExpanded: true,
                   value: selectedMonths,
-                  items: [
+                  items: const [
                     DropdownMenuItem(value: 1, child: Text('1ヶ月')),
                     DropdownMenuItem(value: 3, child: Text('3ヶ月')),
                     DropdownMenuItem(value: 6, child: Text('6ヶ月')),
@@ -1508,6 +1397,18 @@ class _ProfileScreenState extends State<ProfileScreen>
                   },
                 ),
                 const SizedBox(height: 20),
+                // アイコン設定ボタン
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.image),
+                  label: const Text('プロフィールアイコンを設定'),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.blue),
+                    foregroundColor: Colors.blue,
+                  ),
+                  onPressed: () async {
+                    await _uploadProfilePhoto();
+                  },
+                ),
                 const Divider(),
                 const SizedBox(height: 12),
                 const Text(
@@ -1594,7 +1495,7 @@ class _ProfileScreenState extends State<ProfileScreen>
       });
 
       // バックグラウンドでSupabaseに保存
-      await supabase.from('users').update({
+      final updateData = {
         'training_started': true,
         'training_start_date': startDate.toIso8601String(),
         'training_end_date': endDate.toIso8601String(),
@@ -1603,7 +1504,11 @@ class _ProfileScreenState extends State<ProfileScreen>
         'training_start_weight': startWeight,
         'weekly_summary_day': 0, // デフォルトは日曜日
         'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('user_id', userId);
+      };
+      if (beforePhotoUrl != null) {
+        updateData['training_before_photo'] = beforePhotoUrl;
+      }
+      await supabase.from('users').update(updateData).eq('user_id', userId);
 
       // 初期体重を記録
       await supabase.from('weight_logs').insert({
@@ -1636,6 +1541,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   // 修業を終える（厳重な確認）
   Future<void> _endTraining() async {
+    if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -1671,6 +1577,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 
     if (confirmed == true) {
       // 2段階目の確認
+      if (!mounted) return;
       final finalConfirmed = await showDialog<bool>(
         context: context,
         barrierDismissible: false,
@@ -1707,6 +1614,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 
       if (finalConfirmed == true) {
         // 修業完了の祝福ダイアログを表示
+        if (!mounted) return;
         await showDialog(
           context: context,
           barrierDismissible: false,
@@ -1786,66 +1694,480 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 
   // フレンド一覧を表示
-  void _showFriendsList() {
+  void _showFriendsList() async {
+    final userId = supabase.auth.currentUser!.id;
+
+    // フレンドリストを新たに読み込む
+    List<Map<String, dynamic>> currentFriends = [];
+    List<Map<String, dynamic>> pendingRequests = [];
+
+    try {
+      // friendsテーブから直接確認
+      final allFriends =
+          await supabase.from('friends').select('*').eq('user_id', userId);
+
+      print('📊 friends テーブルのすべてのレコード: $allFriends');
+      print('📊 ユーザーID: $userId');
+      print('📊 friends テーブルのレコード数: ${allFriends.length}');
+
+      // friendsテーブルからフレンドIDを取得
+      final friendsData = await supabase
+          .from('friends')
+          .select('friend_id')
+          .eq('user_id', userId);
+
+      final friendIds =
+          friendsData.map<String>((row) => row['friend_id'] as String).toList();
+
+      print('📊 取得したフレンドID一覧: $friendIds');
+
+      if (friendIds.isNotEmpty) {
+        // フレンドのユーザー情報を取得
+        final response = await supabase
+            .from('users')
+            .select()
+            .inFilter('user_id', friendIds);
+        currentFriends = List<Map<String, dynamic>>.from(response);
+        print('✅ フレンド情報取得成功: ${currentFriends.length}件');
+      } else {
+        print('⚠️ フレンドIDが取得できませんでした');
+      }
+    } catch (e) {
+      print('❌ フレンドリスト読み込みエラー: $e');
+    }
+
+    // 未承認のフレンド申請を取得
+    try {
+      final userId = supabase.auth.currentUser!.id;
+      final response = await supabase
+          .from('friend_requests')
+          .select('*')
+          .eq('target_id', userId)
+          .eq('status', 'pending')
+          .order('requested_at', ascending: false);
+
+      pendingRequests = List<Map<String, dynamic>>.from(response);
+
+      // requester_idのユーザー情報を取得
+      for (var i = 0; i < pendingRequests.length; i++) {
+        final requester = await supabase
+            .from('users')
+            .select('display_name, photo_url')
+            .eq('user_id', pendingRequests[i]['requester_id'])
+            .maybeSingle();
+
+        if (requester != null) {
+          pendingRequests[i]['requester'] = requester;
+        }
+      }
+    } catch (e) {
+      print('❌ フレンド申請読み込みエラー: $e');
+    }
+
+    if (!mounted) return;
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('フレンド一覧'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: _friends.isEmpty
-              ? const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Text('まだフレンドがいません'),
-                  ),
-                )
-              : ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: _friends.length,
-                  itemBuilder: (context, index) {
-                    final friend = _friends[index];
-                    return ListTile(
-                      leading: CircleAvatar(
-                        backgroundImage: friend['photo_url'] != null
-                            ? NetworkImage(friend['photo_url'])
-                            : null,
-                        child: friend['photo_url'] == null
-                            ? Text(
-                                (friend['display_name'] ?? 'U')[0]
-                                    .toUpperCase(),
-                              )
-                            : null,
-                      ),
-                      title: Text(friend['display_name'] ?? 'ユーザー'),
-                      subtitle: friend['bio'] != null
-                          ? Text(
-                              friend['bio'],
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            )
-                          : null,
-                      onTap: () {
-                        Navigator.pop(context);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => FriendProfileScreen(
-                              friendId: friend['user_id'],
-                            ),
-                          ),
-                        );
-                      },
-                    );
-                  },
+      builder: (context) => DefaultTabController(
+        length: 2,
+        child: AlertDialog(
+          title: const Text('フレンド管理'),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 400,
+            child: Column(
+              children: [
+                // タブバー
+                TabBar(
+                  labelColor: Colors.deepPurple,
+                  unselectedLabelColor: Colors.grey,
+                  tabs: [
+                    Tab(text: 'フレンド (${currentFriends.length})'),
+                    Tab(text: '申請待ち (${pendingRequests.length})'),
+                  ],
                 ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('閉じる'),
+                // タブコンテンツ
+                Expanded(
+                  child: TabBarView(
+                    children: [
+                      // フレンド一覧タブ
+                      currentFriends.isEmpty
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(24),
+                                child: Text('まだフレンドがいません'),
+                              ),
+                            )
+                          : ListView.builder(
+                              shrinkWrap: true,
+                              itemCount: currentFriends.length,
+                              itemBuilder: (context, index) {
+                                final friend = currentFriends[index];
+                                return ListTile(
+                                  leading: CircleAvatar(
+                                    backgroundImage: friend['photo_url'] != null
+                                        ? NetworkImage(friend['photo_url'])
+                                        : null,
+                                    child: friend['photo_url'] == null
+                                        ? Text(
+                                            (friend['display_name'] ?? 'U')[0]
+                                                .toUpperCase(),
+                                          )
+                                        : null,
+                                  ),
+                                  title: Text(friend['display_name'] ?? 'ユーザー'),
+                                  trailing: PopupMenuButton<String>(
+                                    onSelected: (String value) async {
+                                      final userId =
+                                          supabase.auth.currentUser!.id;
+                                      final friendId = friend['user_id'];
+
+                                      try {
+                                        switch (value) {
+                                          case 'delete':
+                                            // フレンド削除
+                                            await supabase
+                                                .from('friends')
+                                                .delete()
+                                                .eq('user_id', userId)
+                                                .eq('friend_id', friendId);
+                                            await supabase
+                                                .from('friends')
+                                                .delete()
+                                                .eq('user_id', friendId)
+                                                .eq('friend_id', userId);
+
+                                            if (mounted) {
+                                              Navigator.pop(context);
+                                              _loadFriends();
+                                              _showFriendsList();
+                                            }
+                                            break;
+
+                                          case 'block':
+                                            // ブロック
+                                            await supabase
+                                                .from('blocked_users')
+                                                .insert({
+                                              'user_id': userId,
+                                              'blocked_user_id': friendId,
+                                            });
+
+                                            // ブロック時は自動的にフレンド削除
+                                            await supabase
+                                                .from('friends')
+                                                .delete()
+                                                .eq('user_id', userId)
+                                                .eq('friend_id', friendId);
+                                            await supabase
+                                                .from('friends')
+                                                .delete()
+                                                .eq('user_id', friendId)
+                                                .eq('friend_id', userId);
+
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                const SnackBar(
+                                                  content:
+                                                      Text('🚫 ユーザーをブロックしました'),
+                                                  backgroundColor: Colors.red,
+                                                ),
+                                              );
+                                              Navigator.pop(context);
+                                              _loadFriends();
+                                              _showFriendsList();
+                                            }
+                                            break;
+
+                                          case 'mute':
+                                            // ミュート
+                                            await supabase
+                                                .from('muted_users')
+                                                .insert({
+                                              'user_id': userId,
+                                              'muted_user_id': friendId,
+                                            });
+
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                const SnackBar(
+                                                  content:
+                                                      Text('🔇 ユーザーをミュートしました'),
+                                                  backgroundColor:
+                                                      Colors.orange,
+                                                ),
+                                              );
+                                              Navigator.pop(context);
+                                            }
+                                            break;
+                                        }
+                                      } catch (e) {
+                                        print('❌ エラー: $e');
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(content: Text('エラー: $e')),
+                                          );
+                                        }
+                                      }
+                                    },
+                                    itemBuilder: (BuildContext context) =>
+                                        <PopupMenuEntry<String>>[
+                                      const PopupMenuItem<String>(
+                                        value: 'delete',
+                                        child: Row(
+                                          children: [
+                                            Icon(Icons.person_remove,
+                                                color: Colors.red),
+                                            SizedBox(width: 8),
+                                            Text('削除',
+                                                style: TextStyle(
+                                                    color: Colors.red)),
+                                          ],
+                                        ),
+                                      ),
+                                      const PopupMenuItem<String>(
+                                        value: 'block',
+                                        child: Row(
+                                          children: [
+                                            Icon(Icons.block,
+                                                color: Colors.red),
+                                            SizedBox(width: 8),
+                                            Text('ブロック',
+                                                style: TextStyle(
+                                                    color: Colors.red)),
+                                          ],
+                                        ),
+                                      ),
+                                      const PopupMenuItem<String>(
+                                        value: 'mute',
+                                        child: Row(
+                                          children: [
+                                            Icon(Icons.volume_off,
+                                                color: Colors.orange),
+                                            SizedBox(width: 8),
+                                            Text('ミュート',
+                                                style: TextStyle(
+                                                    color: Colors.orange)),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  onTap: () {
+                                    Navigator.pop(context);
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) =>
+                                            FriendProfileScreen(
+                                          friendId: friend['user_id'],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                      // 申請待ちタブ
+                      pendingRequests.isEmpty
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(24),
+                                child: Text('申請待ちのユーザーはいません'),
+                              ),
+                            )
+                          : ListView.builder(
+                              shrinkWrap: true,
+                              itemCount: pendingRequests.length,
+                              itemBuilder: (context, index) {
+                                final request = pendingRequests[index];
+                                final requester = request['requester']
+                                    as Map<String, dynamic>?;
+
+                                return ListTile(
+                                  leading: CircleAvatar(
+                                    backgroundImage: requester?['photo_url'] !=
+                                            null
+                                        ? NetworkImage(requester!['photo_url'])
+                                        : null,
+                                    child: requester?['photo_url'] == null
+                                        ? Text(
+                                            (requester?['display_name'] ??
+                                                    'U')[0]
+                                                .toUpperCase(),
+                                          )
+                                        : null,
+                                  ),
+                                  title: Text(
+                                      requester?['display_name'] ?? 'ユーザー'),
+                                  trailing: SizedBox(
+                                    width: 100,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Expanded(
+                                          child: ElevatedButton(
+                                            style: ElevatedButton.styleFrom(
+                                              padding: EdgeInsets.zero,
+                                              backgroundColor: Colors.red,
+                                            ),
+                                            onPressed: () async {
+                                              // 拒否処理
+                                              try {
+                                                await supabase
+                                                    .from('friend_requests')
+                                                    .update({
+                                                  'status': 'rejected',
+                                                  'responded_at': DateTime.now()
+                                                      .toIso8601String(),
+                                                }).eq('id', request['id']);
+
+                                                pendingRequests.removeAt(index);
+                                                if (mounted) {
+                                                  Navigator.pop(context);
+                                                  _showFriendsList();
+                                                }
+                                              } catch (e) {
+                                                print('❌ 拒否エラー: $e');
+                                              }
+                                            },
+                                            child: const Text(
+                                              '拒否',
+                                              style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.white),
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Expanded(
+                                          child: ElevatedButton(
+                                            style: ElevatedButton.styleFrom(
+                                              padding: EdgeInsets.zero,
+                                              backgroundColor: Colors.green,
+                                            ),
+                                            onPressed: () async {
+                                              // 承認処理
+                                              try {
+                                                await supabase
+                                                    .from('friend_requests')
+                                                    .update({
+                                                  'status': 'accepted',
+                                                  'responded_at': DateTime.now()
+                                                      .toIso8601String(),
+                                                }).eq('id', request['id']);
+
+                                                // friendsテーブルに既存レコードがなければinsert
+                                                final requesterId =
+                                                    request['requester_id'];
+                                                final targetId =
+                                                    request['target_id'];
+                                                // 1. requester→target
+                                                final exists1 = await supabase
+                                                    .from('friends')
+                                                    .select('user_id')
+                                                    .eq('user_id', requesterId)
+                                                    .eq('friend_id', targetId)
+                                                    .maybeSingle();
+                                                if (exists1 == null) {
+                                                  await supabase
+                                                      .from('friends')
+                                                      .insert({
+                                                    'user_id': requesterId,
+                                                    'friend_id': targetId,
+                                                  });
+                                                }
+                                                // 2. target→requester
+                                                final exists2 = await supabase
+                                                    .from('friends')
+                                                    .select('user_id')
+                                                    .eq('user_id', targetId)
+                                                    .eq('friend_id',
+                                                        requesterId)
+                                                    .maybeSingle();
+                                                if (exists2 == null) {
+                                                  await supabase
+                                                      .from('friends')
+                                                      .insert({
+                                                    'user_id': targetId,
+                                                    'friend_id': requesterId,
+                                                  });
+                                                }
+
+                                                // 申請者に通知を送信
+                                                await supabase
+                                                    .from('notifications')
+                                                    .insert({
+                                                  'recipient_id': requesterId,
+                                                  'sender_id': targetId,
+                                                  'notification_type':
+                                                      'friend_accept',
+                                                  'content': {},
+                                                  'message': 'フレンド申請が承認されました',
+                                                });
+
+                                                // フレンドリストを再度読み込み
+                                                await _loadFriends();
+
+                                                if (mounted) {
+                                                  ScaffoldMessenger.of(context)
+                                                      .showSnackBar(
+                                                    const SnackBar(
+                                                      content: Text(
+                                                          '✅ フレンド申請を承認しました'),
+                                                      backgroundColor:
+                                                          Colors.green,
+                                                    ),
+                                                  );
+                                                  Navigator.pop(context);
+                                                  // 少し遅延してからダイアログを再度開く
+                                                  await Future.delayed(
+                                                      const Duration(
+                                                          milliseconds: 500));
+                                                  _showFriendsList();
+                                                }
+                                              } catch (e) {
+                                                print('❌ 承認エラー: $e');
+                                                if (mounted) {
+                                                  ScaffoldMessenger.of(context)
+                                                      .showSnackBar(
+                                                    SnackBar(
+                                                        content:
+                                                            Text('エラー: $e')),
+                                                  );
+                                                }
+                                              }
+                                            },
+                                            child: const Text(
+                                              '承認',
+                                              style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.white),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('閉じる'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2101,9 +2423,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                               _buildStatColumn(
                                 '${_friends.length}',
                                 'フレンド',
-                                onTap: _friends.isNotEmpty
-                                    ? () => _showFriendsList()
-                                    : null,
+                                onTap: () => _showFriendsList(),
                               ),
                             ],
                           ),
@@ -2178,17 +2498,16 @@ class _ProfileScreenState extends State<ProfileScreen>
                         width: double.infinity,
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [Colors.orange, Colors.deepOrange],
-                          ),
+                          color: Colors.orange.shade50,
                           borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.orange.shade300),
                         ),
                         child: Column(
                           children: [
                             const Text(
-                              '🔥 修業中',
+                              '修業中',
                               style: TextStyle(
-                                color: Colors.white,
+                                color: Colors.orange,
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
                               ),
@@ -2196,11 +2515,11 @@ class _ProfileScreenState extends State<ProfileScreen>
                             const SizedBox(height: 8),
                             Text(
                               '目標: ${_userData?['training_daily_steps_goal'] ?? 0} 歩/日',
-                              style: const TextStyle(color: Colors.white),
+                              style: TextStyle(color: Colors.grey.shade700),
                             ),
                             Text(
                               '期間: ${_userData?['training_months'] ?? 0} ヶ月',
-                              style: const TextStyle(color: Colors.white),
+                              style: TextStyle(color: Colors.grey.shade700),
                             ),
                             if (_userData?['training_end_date'] != null)
                               Builder(
@@ -2213,8 +2532,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                                         .inDays;
                                     return Text(
                                       '残り: $remaining 日',
-                                      style: const TextStyle(
-                                        color: Colors.white,
+                                      style: TextStyle(
+                                        color: Colors.orange.shade700,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     );
@@ -2264,12 +2583,12 @@ class _ProfileScreenState extends State<ProfileScreen>
                 unselectedLabelColor: Colors.grey,
                 indicatorColor: Colors.black,
                 tabs: [
-                  Tab(
+                  const Tab(
                     icon: Icon(Icons.grid_on),
                     text: '投稿',
                   ),
                   Tab(
-                    icon: Icon(Icons.favorite),
+                    icon: const Icon(Icons.favorite),
                     text: '慈悲リクエスト (${_mercyRequests.length})',
                   ),
                 ],
@@ -2298,10 +2617,10 @@ class _ProfileScreenState extends State<ProfileScreen>
   // 投稿グリッドウィジェット
   Widget _buildMealsGrid() {
     if (_myMeals.isEmpty) {
-      return Center(
+      return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
-          children: const [
+          children: [
             Icon(Icons.camera_alt, size: 60, color: Colors.grey),
             SizedBox(height: 16),
             Text(
@@ -2346,10 +2665,10 @@ class _ProfileScreenState extends State<ProfileScreen>
   // 慈悲リクエスト一覧ウィジェット
   Widget _buildMercyRequestsList() {
     if (_mercyRequests.isEmpty) {
-      return Center(
+      return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
-          children: const [
+          children: [
             Icon(Icons.favorite_border, size: 60, color: Colors.grey),
             SizedBox(height: 16),
             Text(

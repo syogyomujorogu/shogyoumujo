@@ -81,4 +81,107 @@ Android Studio: Pluginから「Flutter」をインストール
 > **注意**: プロフィール写真の変更は**長押し**で行います。
 
 > **セキュリティ**: 5回タップ後3秒以内にタップしないとカウントがリセットされるため、一般ユーザーが偶然有効化する可能性は低いです。
+
+## ⚠️ トラブルシューティング (Troubleshooting)
+
+### エラー: "Unable to determine engine version" または "engine.stamp/engine.realm file locked"
+
+**症状**: `flutter run` 実行時に以下のエラーが発生する
+```
+
+別のプロセスで使用されているため、プロセスはファイル 'C:\src\flutter\bin\cache\engine.stamp' にアクセスできません
+Error: Unable to determine engine version...
+
+````
+
+**原因**: 複数のdart.exeプロセスが同時にFlutterエンジンファイルへアクセスしようとしてファイルロックが発生
+
+**解決方法**:
+
+#### 方法1: バージョンチェックをスキップして起動（推奨）
+```powershell
+cd C:\Users\n1250282\Desktop\mujo\shogyoumujo\frontend
+flutter run --no-version-check
+````
+
+#### 方法2: 自動修復スクリプトを使用
+
+プロジェクトルートの `fix_flutter_lock.bat` を実行：
+
+```powershell
+.\fix_flutter_lock.bat
+```
+
+#### 方法3: 手動でプロセスを終了
+
+1. PowerShellで実行：
+
+```powershell
+Get-Process | Where-Object {$_.Path -like "*flutter*" -or $_.Path -like "*dart*"} | Stop-Process -Force
+```
+
+2. その後、通常通り `flutter run --no-version-check` を実行
+
+**予防策**:
+
+- VS Codeで複数のターミナルを開いている場合は、不要なターミナルを閉じる
+- `flutter run` を複数同時に実行しない
+- エラーが出たら `Ctrl+C` で確実に終了してから再実行
+
+### 🛡️ エラーを防ぐための正しい終了方法
+
+#### アプリ実行中の終了手順
+
+1. **ホットリロード中の場合**:
+   - ターミナルで `q` キーを押して終了
+   - または `Ctrl+C` を押してプロセスを停止
+
+2. **VS Codeのデバッグ実行の場合**:
+   - デバッグツールバーの停止ボタン（赤い■）をクリック
+   - または `Shift+F5` で停止
+
+3. **ターミナルを閉じる前に**:
+   - 必ず `q` または `Ctrl+C` でFlutterプロセスを終了してから閉じる
+   - ターミナルを×ボタンで強制終了すると、dartプロセスがバックグラウンドに残る可能性あり
+
+#### VS Code終了時の注意
+
+- **推奨**: VS Codeを閉じる前に、全てのターミナルで実行中のプロセスを停止
+- ターミナルを開いたまま VS Code を閉じると、dartプロセスが残留する場合がある
+
+#### 定期的なクリーンアップ
+
+週に1回程度、以下のコマンドで残留プロセスをクリーンアップすることを推奨：
+
+```powershell
+# 残留しているFlutter/Dartプロセスを確認
+Get-Process | Where-Object {$_.Path -like "*flutter*" -or $_.Path -like "*dart*"}
+
+# 全て終了（作業中でないことを確認してから実行）
+Get-Process | Where-Object {$_.Path -like "*flutter*" -or $_.Path -like "*dart*"} | Stop-Process -Force
+```
+
+#### ベストプラクティス
+
+✅ **推奨される起動方法**:
+
+```powershell
+cd C:\Users\n1250282\Desktop\mujo\shogyoumujo\frontend
+flutter run --no-version-check
+```
+
+✅ **推奨される終了方法**:
+
+1. ターミナルで `q` を押す
+2. プロセスが完全に終了するのを待つ（数秒）
+3. ターミナルを閉じる
+
+❌ **避けるべき操作**:
+
+- ターミナルを×ボタンで強制終了
+- `flutter run` 実行中にVS Codeを強制終了
+- 複数のターミナルで同時に `flutter run` を実行
+
+```
+
 ```

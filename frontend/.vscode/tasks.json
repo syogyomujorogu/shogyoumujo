@@ -1,0 +1,60 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Flutter: Run on Emulator",
+      "type": "shell",
+      "command": "flutter",
+      "args": ["run", "-d", "emulator-5554", "--no-build-cache"],
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Flutter: Clean",
+      "type": "shell",
+      "command": "flutter",
+      "args": ["clean"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Flutter: Pub Get",
+      "type": "shell",
+      "command": "flutter",
+      "args": ["pub", "get"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Flutter: Fix Locks and Run",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-Command",
+        "Get-Process dart -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1; Remove-Item 'C:\\src\\flutter\\bin\\cache\\engine.*' -Force -ErrorAction SilentlyContinue; flutter run -d emulator-5554 --no-build-cache"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Launch Emulator",
+      "type": "shell",
+      "command": "flutter",
+      "args": ["emulators", "--launch", "Pixel_9a"],
+      "problemMatcher": [],
+      "isBackground": true
+    }
+  ]
+}

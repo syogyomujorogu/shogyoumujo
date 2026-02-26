@@ -14,7 +14,7 @@ import 'package:intl/intl.dart';
 final supabase = Supabase.instance.client;
 
 class ItemNotificationsScreen extends StatefulWidget {
-  const ItemNotificationsScreen({Key? key}) : super(key: key);
+  const ItemNotificationsScreen({super.key});
 
   @override
   State<ItemNotificationsScreen> createState() =>
@@ -38,7 +38,7 @@ class _ItemNotificationsScreenState extends State<ItemNotificationsScreen> {
       final notifications =
           await supabase.from('item_usage_notifications').select('''
             *,
-            sender:sender_id(username, avatar_url),
+            sender:sender_id(display_name, photo_url),
             item:items(name, rarity)
           ''').eq('recipient_id', userId).order('created_at', ascending: false);
 
@@ -124,10 +124,10 @@ class _ItemNotificationsScreenState extends State<ItemNotificationsScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _notifications.isEmpty
-              ? Center(
+              ? const Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    children: const [
+                    children: [
                       Icon(Icons.notifications_off,
                           size: 100, color: Colors.grey),
                       SizedBox(height: 16),
@@ -154,7 +154,7 @@ class _ItemNotificationsScreenState extends State<ItemNotificationsScreen> {
                       final createdAt =
                           DateTime.parse(notification['created_at']);
 
-                      final senderName = sender?['username'] ?? '削除されたユーザー';
+                      final senderName = sender?['display_name'] ?? '削除されたユーザー';
                       final itemName = item?['name'] ?? '不明なアイテム';
                       final rarity = item?['rarity'] ?? 'N';
 

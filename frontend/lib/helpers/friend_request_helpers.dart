@@ -166,17 +166,16 @@ Future<List<Map<String, dynamic>>> getReceivedFriendRequests({
   try {
     final currentUserId = supabase.auth.currentUser!.id;
 
-    var query = supabase
+    final queryBuilder = supabase
         .from('friend_requests')
         .select('*, requester:requester_id(username, avatar_url)')
-        .eq('target_id', currentUserId)
-        .order('requested_at', ascending: false);
+        .eq('target_id', currentUserId);
 
     if (status != null) {
-      query = query.eq('status', status);
+      queryBuilder.eq('status', status);
     }
 
-    final requests = await query;
+    final requests = await queryBuilder.order('requested_at', ascending: false);
     return (requests as List).cast<Map<String, dynamic>>();
   } catch (e) {
     print('フレンド申請取得エラー: $e');
@@ -195,17 +194,16 @@ Future<List<Map<String, dynamic>>> getSentFriendRequests({
   try {
     final currentUserId = supabase.auth.currentUser!.id;
 
-    var query = supabase
+    final queryBuilder = supabase
         .from('friend_requests')
         .select('*, target:target_id(username, avatar_url)')
-        .eq('requester_id', currentUserId)
-        .order('requested_at', ascending: false);
+        .eq('requester_id', currentUserId);
 
     if (status != null) {
-      query = query.eq('status', status);
+      queryBuilder.eq('status', status);
     }
 
-    final requests = await query;
+    final requests = await queryBuilder.order('requested_at', ascending: false);
     return (requests as List).cast<Map<String, dynamic>>();
   } catch (e) {
     print('送信済み申請取得エラー: $e');

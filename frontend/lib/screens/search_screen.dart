@@ -15,7 +15,7 @@ final supabase = Supabase.instance.client;
 
 /// 検索画面のStatefulWidget
 class SearchScreen extends StatefulWidget {
-  const SearchScreen({Key? key}) : super(key: key);
+  const SearchScreen({super.key});
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -58,6 +58,70 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
+  /// フレンド関係をチェック（friendsテーブルを確認）
+  Future<bool> _isFriend(String friendId) async {
+    try {
+      final userId = supabase.auth.currentUser!.id;
+      final result = await supabase
+          .from('friends')
+          .select()
+          .eq('user_id', userId)
+          .eq('friend_id', friendId)
+          .maybeSingle();
+      return result != null;
+    } catch (e) {
+      print('❌ フレンド関係チェックエラー: $e');
+      return false;
+    }
+  }
+
+  /// フレンド申請の状態をチェック
+  Future<String?> _checkFriendRequestStatus(String targetId) async {
+    try {
+      final userId = supabase.auth.currentUser!.id;
+
+      // 自分 → 相手への申請
+      final sentRequest = await supabase
+          .from('friend_requests')
+          .select()
+          .eq('requester_id', userId)
+          .eq('target_id', targetId)
+          .maybeSingle();
+
+      if (sentRequest != null) {
+        return sentRequest['status']; // 'pending' | 'accepted' | 'rejected'
+      }
+
+      // 相手 → 自分への申請
+      final receivedRequest = await supabase
+          .from('friend_requests')
+          .select()
+          .eq('requester_id', targetId)
+          .eq('target_id', userId)
+          .maybeSingle();
+
+      if (receivedRequest != null && receivedRequest['status'] == 'pending') {
+        return 'received'; // 承認待ち
+      }
+
+      return null; // 申請なし
+    } catch (e) {
+      print('❌ フレンド申請状態チェックエラー: $e');
+      return null;
+    }
+  }
+
+  /// フレンドボタンの状態を取得
+  Future<Map<String, dynamic>> _getFriendButtonState(String targetId) async {
+    final isFriend = await _isFriend(targetId);
+    final requestStatus = await _checkFriendRequestStatus(targetId);
+
+    return {
+      'isFriend': isFriend,
+      'requestStatus': requestStatus,
+    };
+  }
+
   /// ユーザーを検索
   Future<void> _searchUsers(String query) async {
     if (query.trim().isEmpty) {
@@ -75,15 +139,40 @@ class _SearchScreenState extends State<SearchScreen> {
       });
 
       // ユーザーIDまたはメールで検索
+      // ブロック・ミュートユーザーIDを取得
+      final userId = supabase.auth.currentUser!.id;
+      final blockedRows = await supabase
+          .from('blocked_users')
+          .select('blocked_user_id')
+          .eq('user_id', userId);
+      final mutedRows = await supabase
+          .from('muted_users')
+          .select('muted_user_id')
+          .eq('user_id', userId);
+      final blockedIds = blockedRows
+          .map<String>((row) => row['blocked_user_id'] as String)
+          .toSet();
+      final mutedIds = mutedRows
+          .map<String>((row) => row['muted_user_id'] as String)
+          .toSet();
+
       final results = await supabase
           .from('users')
           .select()
           .or('custom_user_id.ilike.%$query%,email.ilike.%$query%')
           .limit(10);
 
+      // ブロック・ミュートユーザー除外
+      final filteredResults = (results as List).where((user) {
+        final uid = user['user_id'] as String?;
+        return uid != null &&
+            !blockedIds.contains(uid) &&
+            !mutedIds.contains(uid);
+      }).toList();
+
       if (mounted) {
         setState(() {
-          _searchResults = List<Map<String, dynamic>>.from(results ?? []);
+          _searchResults = filteredResults;
           _isLoading = false;
         });
       }
@@ -98,59 +187,115 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
-  /// フレンド追加
-  Future<void> _addFriend(String friendId, String friendName) async {
+  /// フレンド申請を送信
+  Future<void> _sendFriendRequest(String targetId, String targetName) async {
     try {
       final userId = supabase.auth.currentUser!.id;
 
-      if (friendId == userId) {
+      if (targetId == userId) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('自分自身は追加できません')),
+          const SnackBar(content: Text('自分自身には申請できません')),
         );
         return;
       }
 
-      final currentFriends =
-          List<String>.from(_currentUserData?['friends'] ?? []);
-
-      if (currentFriends.contains(friendId)) {
+      // 既にフレンドか確認
+      if (await _isFriend(targetId)) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('既にフレンドです')),
         );
         return;
       }
 
-      currentFriends.add(friendId);
+      // フレンド申請を作成
+      await supabase.from('friend_requests').insert({
+        'requester_id': userId,
+        'target_id': targetId,
+        'status': 'pending',
+        'requested_at': DateTime.now().toUtc().toIso8601String(),
+      });
 
-      await supabase.from('users').update({
-        'friends': currentFriends,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('user_id', userId);
-
-      // ローカルデータを更新
-      setState(() {
-        _currentUserData?['friends'] = currentFriends;
-        // 検索結果も更新
-        for (var result in _searchResults) {
-          if (result['user_id'] == friendId) {
-            // UI状態を更新するため、検索結果をリロード
-          }
-        }
+      // 通知を送信
+      final currentUserName = _currentUserData?['display_name'] ?? 'ユーザー';
+      await supabase.from('notifications').insert({
+        'recipient_id': targetId,
+        'sender_id': userId,
+        'notification_type': 'friend_request',
+        'content': {},
+        'message': '$currentUserName さんからフレンド申請が届きました',
       });
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✅ $friendName をフレンドに追加しました'),
+            content: Text('✅ $targetName にフレンド申請を送信しました'),
             backgroundColor: Colors.green,
           ),
         );
+        setState(() {}); // UIを更新
       }
     } catch (e) {
-      print('❌ フレンド追加エラー: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('エラー: $e')),
-      );
+      print('❌ フレンド申請エラー: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('エラー: $e')),
+        );
+      }
+    }
+  }
+
+  /// フレンド申請を承認
+  Future<void> _acceptFriendRequest(
+      String requesterId, String requesterName) async {
+    try {
+      final userId = supabase.auth.currentUser!.id;
+
+      // friend_requestsを取得
+      final request = await supabase
+          .from('friend_requests')
+          .select()
+          .eq('requester_id', requesterId)
+          .eq('target_id', userId)
+          .single();
+
+      // ステータスを更新
+      await supabase.from('friend_requests').update({
+        'status': 'accepted',
+        'responded_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', request['id']);
+
+      // friendsテーブルに双方向レコードを追加
+      await supabase.from('friends').insert([
+        {'user_id': requesterId, 'friend_id': userId},
+        {'user_id': userId, 'friend_id': requesterId},
+      ]);
+
+      // 承認通知を送信
+      final currentUserName = _currentUserData?['display_name'] ?? 'ユーザー';
+      await supabase.from('notifications').insert({
+        'recipient_id': requesterId,
+        'sender_id': userId,
+        'notification_type': 'friend_accept',
+        'content': {},
+        'message': '$currentUserName さんがフレンド申請を承認しました',
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ $requesterName のフレンド申請を承認しました'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        setState(() {}); // UIを更新
+      }
+    } catch (e) {
+      print('❌ フレンド申請承認エラー: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('エラー: $e')),
+        );
+      }
     }
   }
 
@@ -159,20 +304,18 @@ class _SearchScreenState extends State<SearchScreen> {
     try {
       final userId = supabase.auth.currentUser!.id;
 
-      final currentFriends =
-          List<String>.from(_currentUserData?['friends'] ?? []);
+      // friendsテーブルから双方向レコードを削除
+      await supabase
+          .from('friends')
+          .delete()
+          .eq('user_id', userId)
+          .eq('friend_id', friendId);
 
-      currentFriends.removeWhere((id) => id == friendId);
-
-      await supabase.from('users').update({
-        'friends': currentFriends,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('user_id', userId);
-
-      // ローカルデータを更新
-      setState(() {
-        _currentUserData?['friends'] = currentFriends;
-      });
+      await supabase
+          .from('friends')
+          .delete()
+          .eq('user_id', friendId)
+          .eq('friend_id', userId);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -181,12 +324,15 @@ class _SearchScreenState extends State<SearchScreen> {
             backgroundColor: Colors.orange,
           ),
         );
+        setState(() {}); // UIを更新
       }
     } catch (e) {
       print('❌ フレンド削除エラー: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('エラー: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('エラー: $e')),
+        );
+      }
     }
   }
 
@@ -294,10 +440,6 @@ class _SearchScreenState extends State<SearchScreen> {
                               final userCustomId = user['custom_user_id'] ?? '';
                               final userEmail = user['email'] ?? '';
                               final userPhotoUrl = user['photo_url'] as String?;
-                              final isFriend =
-                                  (_currentUserData?['friends'] as List?)
-                                          ?.contains(userId) ??
-                                      false;
                               final isCurrentUser =
                                   userId == supabase.auth.currentUser!.id;
 
@@ -329,25 +471,83 @@ class _SearchScreenState extends State<SearchScreen> {
                                   ),
                                   trailing: isCurrentUser
                                       ? null
-                                      : ElevatedButton(
-                                          onPressed: () {
+                                      : FutureBuilder<Map<String, dynamic>>(
+                                          future: _getFriendButtonState(userId),
+                                          builder: (context, snapshot) {
+                                            if (!snapshot.hasData) {
+                                              return const SizedBox(
+                                                width: 80,
+                                                child: Center(
+                                                  child: SizedBox(
+                                                    width: 20,
+                                                    height: 20,
+                                                    child:
+                                                        CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                                  ),
+                                                ),
+                                              );
+                                            }
+
+                                            final state = snapshot.data!;
+                                            final isFriend =
+                                                state['isFriend'] as bool;
+                                            final requestStatus =
+                                                state['requestStatus']
+                                                    as String?;
+
                                             if (isFriend) {
-                                              _removeFriend(userId, userName);
+                                              return ElevatedButton(
+                                                onPressed: () => _removeFriend(
+                                                    userId, userName),
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor: Colors.red,
+                                                ),
+                                                child: const Text(
+                                                  '解除',
+                                                  style: TextStyle(
+                                                      color: Colors.white),
+                                                ),
+                                              );
+                                            } else if (requestStatus ==
+                                                'pending') {
+                                              return const ElevatedButton(
+                                                onPressed: null,
+                                                child: Text('申請中'),
+                                              );
+                                            } else if (requestStatus ==
+                                                'received') {
+                                              return ElevatedButton(
+                                                onPressed: () =>
+                                                    _acceptFriendRequest(
+                                                        userId, userName),
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor: Colors.green,
+                                                ),
+                                                child: const Text(
+                                                  '承認',
+                                                  style: TextStyle(
+                                                      color: Colors.white),
+                                                ),
+                                              );
                                             } else {
-                                              _addFriend(userId, userName);
+                                              return ElevatedButton(
+                                                onPressed: () =>
+                                                    _sendFriendRequest(
+                                                        userId, userName),
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor:
+                                                      Colors.orange,
+                                                ),
+                                                child: const Text(
+                                                  '申請',
+                                                  style: TextStyle(
+                                                      color: Colors.white),
+                                                ),
+                                              );
                                             }
                                           },
-                                          style: ElevatedButton.styleFrom(
-                                            backgroundColor: isFriend
-                                                ? Colors.red
-                                                : Colors.orange,
-                                          ),
-                                          child: Text(
-                                            isFriend ? 'フレンド中' : '追加',
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                            ),
-                                          ),
                                         ),
                                 ),
                               );

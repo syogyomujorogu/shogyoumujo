@@ -12,25 +12,40 @@ dependencies:
     sdk: flutter
 
   # Supabase（バックエンド）
-  supabase_flutter: ^2.0.0
+  supabase_flutter: ^2.9.0
+
+  # 環境変数読み込み
+  flutter_dotenv: ^6.0.0
 
   # 画像選択・カメラ
-  image_picker: ^1.0.4
+  image_picker: ^1.1.2
 
   # 歩数計
-  pedometer: ^4.0.1
+  pedometer: ^4.0.2
+
+  # 位置情報
+  geolocator: ^14.0.2
 
   # HTTP通信（OpenAI API用）
-  http: ^1.1.2
+  http: ^1.2.2
+
+  # Gemini API
+  google_generative_ai: ^0.4.6
 
   # マテリアルアイコン
-  cupertino_icons: ^1.0.6
+  cupertino_icons: ^1.0.8
   intl: ^0.20.2
+  fl_chart: ^1.1.1
+  image: ^4.8.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^3.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
+
+  # 環境変数ファイルを含める
+  assets:
+    - .env

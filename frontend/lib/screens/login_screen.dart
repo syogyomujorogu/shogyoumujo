@@ -16,7 +16,7 @@ final supabase = Supabase.instance.client;
 
 // ログイン画面のStatefulWidget（状態を持つウィジェット）
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({Key? key}) : super(key: key);
+  const LoginScreen({super.key});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -28,8 +28,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController(); // メールアドレス入力
   final _passwordController = TextEditingController(); // パスワード入力
   final _nameController = TextEditingController(); // 表示名入力
-  final _userIdController = TextEditingController(); // ユーザーID入力（新規追加）
-  
+
   bool _isLoading = false; // ローディング状態を管理
   bool _isSignUp = false; // 新規登録モードかどうかを管理
 
@@ -37,7 +36,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _signIn() async {
     // ローディング表示を開始
     setState(() => _isLoading = true);
-    
+
     try {
       // Supabaseの認証APIを使ってログイン
       await supabase.auth.signInWithPassword(
@@ -50,6 +49,9 @@ class _LoginScreenState extends State<LoginScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('ログイン成功！')),
         );
+        
+        // StreamBuilder経由で自動的にメイン画面に遷移するため
+        // ここでは何もしない（認証状態の変化をmain.dartが監視している）
       }
     } on AuthException catch (e) {
       // 認証エラーが発生した場合の処理
@@ -60,7 +62,9 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } finally {
       // ローディング表示を終了
-      setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -68,20 +72,8 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _signUp() async {
     // ローディング表示を開始
     setState(() => _isLoading = true);
-    
+
     try {
-      // 入力されたユーザーIDの重複チェック
-      final existingUser = await supabase
-          .from('users')
-          .select('user_id')
-          .eq('custom_user_id', _userIdController.text.trim())
-          .maybeSingle();
-
-      // 既にそのIDが使われている場合はエラー
-      if (existingUser != null) {
-        throw Exception('このユーザーIDは既に使用されています');
-      }
-
       // Supabaseの認証APIを使って新規アカウントを作成
       final response = await supabase.auth.signUp(
         email: _emailController.text.trim(),
@@ -93,23 +85,15 @@ class _LoginScreenState extends State<LoginScreen> {
         // usersテーブルに追加情報を保存
         await supabase.from('users').insert({
           'user_id': response.user!.id, // Supabaseが自動生成するUUID
-          'custom_user_id': _userIdController.text.trim(), // ユーザーが設定するID
+          'email': _emailController.text.trim(), // メールアドレス（NOT NULL）
           'display_name': _nameController.text.trim(), // 表示名
-          'email': _emailController.text.trim(), // メールアドレス
           'photo_url': 'https://via.placeholder.com/150', // デフォルトのアイコン
-          'degraded_photo_url': '', // 劣化顔画像のURL（初期は空）
-          'is_degraded': false, // 劣化状態かどうか
-          'degrade_level': 0, // 劣化レベル（0〜9）
-          'current_calories': 0, // 今日の摂取カロリー
-          'current_steps': 0, // 今日の歩数
-          'mercy_points': 0, // 慈悲ポイント
-          'friends': [], // フレンドリスト（空の配列）
         });
 
         // 登録成功メッセージを表示
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('登録成功！メールを確認してください')),
+            const SnackBar(content: Text('登録成功！')),
           );
         }
       }
@@ -170,20 +154,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ),
               const SizedBox(height: 48),
-              
-              // 新規登録モードの場合のみ表示
-              if (_isSignUp)
-                TextField(
-                  controller: _userIdController,
-                  decoration: InputDecoration(
-                    labelText: 'ユーザーID（英数字、検索用）',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-              if (_isSignUp) const SizedBox(height: 16),
-              
+
               // 新規登録モードの場合のみ表示
               if (_isSignUp)
                 TextField(
@@ -196,7 +167,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               if (_isSignUp) const SizedBox(height: 16),
-              
+
               // メールアドレス入力フィールド
               TextField(
                 controller: _emailController,
@@ -208,7 +179,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              
+
               // パスワード入力フィールド（入力内容を隠す）
               TextField(
                 controller: _passwordController,
@@ -221,7 +192,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ),
               const SizedBox(height: 24),
-              
+
               // ローディング中はプログレスインジケータを表示
               _isLoading
                   ? const CircularProgressIndicator()
@@ -234,7 +205,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       child: Text(_isSignUp ? '新規登録' : 'ログイン'),
                     ),
               const SizedBox(height: 16),
-              
+
               // モード切り替えボタン
               TextButton(
                 onPressed: () {
@@ -258,7 +229,6 @@ class _LoginScreenState extends State<LoginScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _nameController.dispose();
-    _userIdController.dispose();
     super.dispose();
   }
 }

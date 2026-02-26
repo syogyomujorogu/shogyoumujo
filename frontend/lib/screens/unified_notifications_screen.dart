@@ -11,11 +11,12 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
+import 'meal_detail_screen.dart';
 
 final supabase = Supabase.instance.client;
 
 class UnifiedNotificationsScreen extends StatefulWidget {
-  const UnifiedNotificationsScreen({Key? key}) : super(key: key);
+  const UnifiedNotificationsScreen({super.key});
 
   @override
   State<UnifiedNotificationsScreen> createState() =>
@@ -127,35 +128,35 @@ class _UnifiedNotificationsScreenState
       case 'item_usage':
         // 食事詳細画面に遷移（meal_idが含まれている場合）
         if (content != null && content['meal_id'] != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text('食事詳細画面に移動 (meal_id: ${content['meal_id']})')),
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) =>
+                  MealDetailScreen(mealId: content['meal_id'].toString()),
+            ),
           );
-          // TODO: Navigator.push to MealDetailScreen
         }
         break;
 
       case 'friend_request':
         // フレンド申請詳細/承認画面に遷移
         if (content != null && content['request_id'] != null) {
-          _showFriendRequestDialog(content['request_id']);
+          await _showFriendRequestDialog(content['request_id']);
         }
         break;
 
       case 'friend_accept':
-        // フレンドプロフィールに遷移
+        // フレンドプロフィールに遷移（未実装）
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('フレンドプロフィールに移動')),
+          const SnackBar(content: Text('フレンドプロフィールに移動（未実装）')),
         );
-        // TODO: Navigator.push to UserProfileScreen
         break;
 
       case 'achievement':
-        // 実績画面に遷移
+        // 実績画面に遷移（未実装）
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('実績画面に移動')),
+          const SnackBar(content: Text('実績画面に移動（未実装）')),
         );
-        // TODO: Navigator.push to AchievementsScreen
         break;
 
       default:
@@ -167,9 +168,18 @@ class _UnifiedNotificationsScreenState
     try {
       final request = await supabase
           .from('friend_requests')
-          .select('*, requester:requester_id(username, avatar_url)')
+          .select('*')
           .eq('id', requestId)
           .single();
+
+      // requester_idから申請者の情報を取得
+      final requester = await supabase
+          .from('users')
+          .select('display_name, photo_url')
+          .eq('user_id', request['requester_id'])
+          .maybeSingle();
+
+      final requesterName = requester?['display_name'] ?? '不明なユーザー';
 
       if (!mounted) return;
 
@@ -180,7 +190,7 @@ class _UnifiedNotificationsScreenState
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('${request['requester']['username']}さんからフレンド申請が届いています'),
+              Text('$requesterName さんからフレンド申請が届いています'),
               if (request['message'] != null) ...[
                 const SizedBox(height: 16),
                 Text('メッセージ: ${request['message']}'),
@@ -210,6 +220,7 @@ class _UnifiedNotificationsScreenState
         ),
       );
     } catch (e) {
+      print('❌ フレンドリクエストダイアログエラー: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('エラー: $e')),

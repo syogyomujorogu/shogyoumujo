@@ -20,7 +20,7 @@ final supabase = Supabase.instance.client;
 
 // ホーム画面のStatefulWidget
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({Key? key}) : super(key: key);
+  const HomeScreen({super.key});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -133,7 +133,7 @@ class _HomeScreenState extends State<HomeScreen> {
       // 取得したデータを状態に保存し、画面を更新
       if (mounted) {
         setState(() {
-          meals = List<Map<String, dynamic>>.from(response ?? []);
+          meals = List<Map<String, dynamic>>.from(response);
         });
       }
     } catch (e) {

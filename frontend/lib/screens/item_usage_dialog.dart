@@ -19,12 +19,12 @@ class ItemUsageDialog extends StatefulWidget {
   final bool isOwnMeal; // true: 自分の食事, false: 友達の食事
 
   const ItemUsageDialog({
-    Key? key,
+    super.key,
     required this.mealId,
     required this.mealOwnerId,
     required this.currentCalories,
     required this.isOwnMeal,
-  }) : super(key: key);
+  });
 
   @override
   State<ItemUsageDialog> createState() => _ItemUsageDialogState();
@@ -145,8 +145,8 @@ class _ItemUsageDialogState extends State<ItemUsageDialog> {
           SnackBar(
             content: Text(
               widget.isOwnMeal
-                  ? '✅ カロリーを${effectValue}%減少させました！'
-                  : '⚡ ${effectValue}%増量チケットを使用しました！',
+                  ? '✅ カロリーを$effectValue%減少させました！'
+                  : '⚡ $effectValue%増量チケットを使用しました！',
             ),
             backgroundColor: Colors.green,
           ),
@@ -179,9 +179,9 @@ class _ItemUsageDialogState extends State<ItemUsageDialog> {
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
             : _alreadyUsed
-                ? Column(
+                ? const Column(
                     mainAxisSize: MainAxisSize.min,
-                    children: const [
+                    children: [
                       Icon(Icons.block, size: 64, color: Colors.grey),
                       SizedBox(height: 16),
                       Text(
@@ -195,7 +195,7 @@ class _ItemUsageDialogState extends State<ItemUsageDialog> {
                     ? Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(
+                          const Icon(
                             Icons.inventory_2_outlined,
                             size: 64,
                             color: Colors.grey,

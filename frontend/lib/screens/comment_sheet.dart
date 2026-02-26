@@ -36,10 +36,10 @@ class CommentSheet extends StatefulWidget {
   final String mealCreatorId;
 
   const CommentSheet({
-    Key? key,
+    super.key,
     required this.mealId,
     required this.mealCreatorId,
-  }) : super(key: key);
+  });
 
   @override
   State<CommentSheet> createState() => _CommentSheetState();
@@ -77,7 +77,7 @@ class _CommentSheetState extends State<CommentSheet> {
 
       if (mounted) {
         setState(() {
-          _comments = List<Map<String, dynamic>>.from(comments ?? []);
+          _comments = List<Map<String, dynamic>>.from(comments);
           _isLoading = false;
         });
       }
@@ -336,7 +336,7 @@ class _CommentSheetState extends State<CommentSheet> {
                     const SizedBox(width: 8),
                     // 送信ボタン
                     Container(
-                      decoration: BoxDecoration(
+                      decoration: const BoxDecoration(
                         shape: BoxShape.circle,
                         color: Colors.blue,
                       ),

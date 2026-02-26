@@ -9,13 +9,14 @@
 // =============================================================================
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 
 final supabase = Supabase.instance.client;
 
 class WeeklySummaryDialog extends StatefulWidget {
-  const WeeklySummaryDialog({Key? key}) : super(key: key);
+  const WeeklySummaryDialog({super.key});
 
   @override
   State<WeeklySummaryDialog> createState() => _WeeklySummaryDialogState();
@@ -49,18 +50,18 @@ class _WeeklySummaryDialogState extends State<WeeklySummaryDialog> {
 
     // 今週の歩数記録取得
     final steps = await supabase
-        .from('steps')
+        .from('steps_history')
         .select()
         .eq('user_id', userId)
-        .gte('created_at', weekAgo.toUtc().toIso8601String());
+        .gte('date', weekAgo.toIso8601String().substring(0, 10));
 
     final dailyGoal = userData['training_daily_steps_goal'] ?? 0;
     final totalSteps = (steps as List).fold<int>(
       0,
-      (sum, step) => sum + (step['step_count'] as int? ?? 0),
+      (sum, step) => sum + (step['steps'] as int? ?? 0),
     );
     final stepsGoalDays = (steps as List).where((step) {
-      return (step['step_count'] as int? ?? 0) >= dailyGoal;
+      return (step['steps'] as int? ?? 0) >= dailyGoal;
     }).length;
 
     return {
@@ -129,24 +130,17 @@ class _WeeklySummaryDialogState extends State<WeeklySummaryDialog> {
 
         return AlertDialog(
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(12),
           ),
           title: Column(
             children: [
-              Text(
-                emoji,
-                style: const TextStyle(fontSize: 48),
-              ),
-              const SizedBox(height: 8),
               const Text(
                 '今週の修業まとめ',
-                style: TextStyle(fontWeight: FontWeight.bold),
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
               ),
+              const SizedBox(height: 4),
               Text(
-                DateFormat('M月d日').format(
-                        DateTime.now().subtract(const Duration(days: 7))) +
-                    ' ~ ' +
-                    DateFormat('M月d日').format(DateTime.now()),
+                '${DateFormat('M月d日').format(DateTime.now().subtract(const Duration(days: 7)))} ~ ${DateFormat('M月d日').format(DateTime.now())}',
                 style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
             ],
@@ -158,35 +152,31 @@ class _WeeklySummaryDialogState extends State<WeeklySummaryDialog> {
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [
-                        Colors.orange.shade100,
-                        Colors.deepOrange.shade100
-                      ],
-                    ),
-                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.shade200),
                   ),
                   child: Text(
                     message,
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: Colors.deepOrange,
+                      color: Colors.orange,
                     ),
                     textAlign: TextAlign.center,
                   ),
                 ),
                 const SizedBox(height: 20),
-                _buildStatRow('📸 食事記録', '$mealCount回'),
+                _buildStatRow('食事記録', '$mealCount回'),
                 const Divider(),
                 _buildStatRow(
-                    '🚶 合計歩数', '${NumberFormat('#,###').format(totalSteps)}歩'),
-                const Divider(),
-                _buildStatRow('📊 平均歩数',
-                    '${NumberFormat('#,###').format(averageSteps)}歩/日'),
+                    '合計歩数', '${NumberFormat('#,###').format(totalSteps)}歩'),
                 const Divider(),
                 _buildStatRow(
-                  '✅ 目標達成日数',
+                    '平均歩数', '${NumberFormat('#,###').format(averageSteps)}歩/日'),
+                const Divider(),
+                _buildStatRow(
+                  '目標達成日数',
                   '$goalAchievedDays/7日',
                   color: goalAchievedDays >= 5 ? Colors.green : Colors.orange,
                 ),
@@ -217,7 +207,7 @@ class _WeeklySummaryDialogState extends State<WeeklySummaryDialog> {
                 const Divider(thickness: 2),
                 const SizedBox(height: 12),
                 const Text(
-                  '⚖️ 今週の体重を記録',
+                  '今週の体重を記録',
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
@@ -230,6 +220,10 @@ class _WeeklySummaryDialogState extends State<WeeklySummaryDialog> {
                       child: TextField(
                         controller: _weightController,
                         keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(
+                              RegExp(r'^\d{0,3}(\.\d{0,1})?')),
+                        ],
                         decoration: InputDecoration(
                           hintText: '体重を入力',
                           border: const OutlineInputBorder(),
@@ -265,16 +259,20 @@ class _WeeklySummaryDialogState extends State<WeeklySummaryDialog> {
 
                                 setState(() => _weightSaved = true);
 
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('体重を記録しました: ${weight}kg'),
-                                    backgroundColor: Colors.green,
-                                  ),
-                                );
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('体重を記録しました: ${weight}kg'),
+                                      backgroundColor: Colors.green,
+                                    ),
+                                  );
+                                }
                               } catch (e) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('エラー: $e')),
-                                );
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('エラー: $e')),
+                                  );
+                                }
                               }
                             },
                       style: ElevatedButton.styleFrom(

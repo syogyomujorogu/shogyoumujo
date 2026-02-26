@@ -1,0 +1,37 @@
+{
+  // Flutter SDKの場所を明示
+  "dart.flutterSdkPath": "C:\\src\\flutter",
+
+  // ロック問題対策: Dart Analysis Serverを軽量化
+  "dart.analysisServerFolding": false,
+  "dart.previewFlutterUiGuides": false,
+  "dart.notifyAnalyzerErrors": false,
+  "dart.runPubGetOnPubspecChanges": false,
+  "dart.flutterHotReloadOnSave": "never",
+
+  // ビルド最適化
+  "dart.flutterRunAdditionalArgs": [
+    "--no-build-cache",
+    "--dart-define=FLUTTER_WEB_USE_SKIA=true"
+  ],
+
+  // ファイル監視を制限してリソース節約
+  "files.watcherExclude": {
+    "**/.dart_tool/**": true,
+    "**/build/**": true,
+    "**/.gradle/**": true,
+    "**/android/.gradle/**": true,
+    "**/android/build/**": true,
+    "**/ios/Pods/**": true
+  },
+
+  // Gitの自動フェッチを無効化
+  "git.autofetch": false,
+
+  // 自動保存を有効化（手動保存の遅延を防ぐ）
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 1000,
+
+  // ターミナルの起動ディレクトリを強制（cd問題を防ぐ）
+  "terminal.integrated.cwd": "${workspaceFolder}"
+}

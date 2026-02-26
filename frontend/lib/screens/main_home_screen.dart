@@ -8,6 +8,7 @@
 // =============================================================================
 
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'reel_feed_screen.dart'; // 通常のリールフィード画面
 import 'today_screen.dart'; // 今日の修業画面（食事+ウォーキング統合）
 import 'profile_screen.dart'; // プロフィール画面
@@ -17,7 +18,7 @@ import 'gacha_screen.dart'; // ガチャガチャ画面（新規追加）
 
 // メインホーム画面のStatefulWidget
 class MainHomeScreen extends StatefulWidget {
-  const MainHomeScreen({Key? key}) : super(key: key);
+  const MainHomeScreen({super.key});
 
   @override
   State<MainHomeScreen> createState() => _MainHomeScreenState();
@@ -26,6 +27,8 @@ class MainHomeScreen extends StatefulWidget {
 // メインホーム画面の状態管理クラス
 class _MainHomeScreenState extends State<MainHomeScreen> {
   int _selectedIndex = 0; // 現在のタブインデックス
+
+  bool _loginBonusChecked = false;
 
   // 各タブの画面ウィジェット
   // 0: 通常リール, 1: 諸行無常ログ, 2: 今日, 3: 自分のデータ, 4: ガチャガチャ, 5: プロフィール
@@ -43,6 +46,66 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     setState(() {
       _selectedIndex = index;
     });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _checkLoginBonus();
+  }
+
+  Future<void> _checkLoginBonus() async {
+    if (_loginBonusChecked) return;
+    final supabase = Supabase.instance.client;
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) return;
+
+    // 今日の日付（UTC, yyyy-MM-dd）
+    final today = DateTime.now().toUtc().toIso8601String().substring(0, 10);
+    final result = await supabase
+        .from('login_bonus_history')
+        .select()
+        .eq('user_id', userId)
+        .gte('received_at', today)
+        .maybeSingle();
+
+    if (result == null) {
+      // まだ今日のボーナスを受け取っていない場合、付与
+      await supabase.from('login_bonus_history').insert({
+        'user_id': userId,
+        'received_at': DateTime.now().toUtc().toIso8601String(),
+      });
+      // mercy_pointsを+1
+      final userRow = await supabase
+          .from('users')
+          .select('mercy_points')
+          .eq('user_id', userId)
+          .maybeSingle();
+      final currentPoints = (userRow?['mercy_points'] ?? 0) as int;
+      await supabase.from('users').update({
+        'mercy_points': currentPoints + 1,
+      }).eq('user_id', userId);
+      if (mounted) {
+        _showLoginBonusDialog();
+      }
+    }
+    _loginBonusChecked = true;
+  }
+
+  void _showLoginBonusDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('🎁 ログインボーナス'),
+        content: const Text('本日のログインボーナスを獲得しました！\n慈悲ポイント +1'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override

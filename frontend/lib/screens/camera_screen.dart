@@ -15,13 +15,14 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 // Supabaseクライアントのグローバルインスタンス
 final supabase = Supabase.instance.client;
 
 // カメラ画面のStatefulWidget
 class CameraScreen extends StatefulWidget {
-  const CameraScreen({Key? key}) : super(key: key);
+  const CameraScreen({super.key});
 
   @override
   State<CameraScreen> createState() => _CameraScreenState();
@@ -58,7 +59,7 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // AI分析を実行する関数
+  // AI分析を実行する関数（ダミーデータ版）
   Future<void> _analyzeImage() async {
     // 画像がない場合は処理を中断
     if (_imageFile == null) return;
@@ -67,55 +68,14 @@ class _CameraScreenState extends State<CameraScreen> {
     setState(() => _isAnalyzing = true);
 
     try {
-      // ========== STEP 1: 画像をBase64エンコード ==========
-      final bytes = await _imageFile!.readAsBytes();
-      final base64Image = base64Encode(bytes);
+      // ========== ダミーデータで動作確認 ==========
+      // 一時的にAPI呼び出しをスキップしてダミーデータを使用
+      await Future.delayed(const Duration(seconds: 1)); // 分析っぽく見せるための待機
 
-      // ========== STEP 2: OpenAI APIでカロリー推定 ==========
-      final response = await http.post(
-        Uri.parse('https://api.openai.com/v1/chat/completions'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer YOUR_OPENAI_API_KEY', // 自分のAPIキーに変更
-        },
-        body: jsonEncode({
-          'model': 'gpt-4o-mini', // 使用するモデル
-          'messages': [
-            {
-              'role': 'user',
-              'content': [
-                {
-                  'type': 'text',
-                  'text':
-                      'この食事のカロリーを推定してください。以下のJSON形式で返してください:\n{"dishName": "料理名", "calories": カロリー数値, "isHealthy": true/false}'
-                },
-                {
-                  'type': 'image_url',
-                  'image_url': {
-                    'url': 'data:image/jpeg;base64,$base64Image',
-                  }
-                }
-              ],
-            }
-          ],
-          'max_tokens': 300, // 最大トークン数
-        }),
-      );
-
-      // APIエラーチェック
-      if (response.statusCode != 200) {
-        throw Exception('AI API呼び出し失敗: ${response.statusCode}');
-      }
-
-      // レスポンスをパース
-      final data = jsonDecode(response.body);
-      final content = data['choices'][0]['message']['content'];
-      final result = jsonDecode(content);
-
-      // 結果から各値を取得
-      final calories = result['calories'] as int;
-      final dishName = result['dishName'] as String;
-      final isHealthy = result['isHealthy'] as bool;
+      // ダミーデータ
+      final calories = 850; // 700kcal超で警告が出る
+      final dishName = 'ラーメン（ダミーデータ）';
+      final isHealthy = calories <= 700; // 700kcal以下ならtrue
 
       // ========== STEP 3: Supabase Storageに写真をアップロード ==========
       final userId = supabase.auth.currentUser!.id;
@@ -146,36 +106,83 @@ class _CameraScreenState extends State<CameraScreen> {
         addCalories: calories,
       );
 
-      // ========== STEP 6: 結果をダイアログで表示 ==========
+      // ========== STEP 6: 投稿完了メッセージを表示 ==========
       if (mounted) {
         await showDialog(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('判定結果'),
+            title: const Text('投稿しました！'),
             content: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  dishName,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+                // 料理名
+                Row(
+                  children: [
+                    const Icon(Icons.restaurant, color: Colors.orange),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        dishName,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const Divider(height: 24),
+                // カロリー表示
+                Row(
+                  children: [
+                    const Icon(Icons.local_fire_department, color: Colors.red),
+                    const SizedBox(width: 8),
+                    Text(
+                      '$calories kcal',
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                // 食事の評価
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color:
+                        isHealthy ? Colors.green.shade50 : Colors.red.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isHealthy ? Colors.green : Colors.red,
+                      width: 2,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        isHealthy ? Icons.check_circle : Icons.warning,
+                        color: isHealthy ? Colors.green : Colors.red,
+                        size: 28,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          isHealthy ? '健康的な食事です！' : 'カロリー過多です！',
+                          style: TextStyle(
+                            color: isHealthy
+                                ? Colors.green.shade900
+                                : Colors.red.shade900,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  '$calories kcal',
-                  style: const TextStyle(
-                    fontSize: 24,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                // カロリーが高い場合は警告表示
-                if (!isHealthy)
-                  const Text(
-                    '⚠️ カロリー注意！',
-                    style: TextStyle(color: Colors.red),
-                  ),
               ],
             ),
             actions: [
@@ -211,15 +218,12 @@ class _CameraScreenState extends State<CameraScreen> {
     required int addCalories,
   }) async {
     // ========== 現在のユーザー状態を取得 ==========
-    final userRow = await supabase
-        .from('users')
-        .select()
-        .eq('user_id', userId)
-        .single();
+    final userRow =
+        await supabase.from('users').select().eq('user_id', userId).single();
 
     final currentCalories = (userRow['current_calories'] ?? 0) as int;
     final currentLevel = (userRow['degrade_level'] ?? 0) as int;
-    final normalPhotoUrl = userRow['photo_url'] as String?;
+    // photo_url は将来の劣化アバター機能で使用予定
 
     // ========== 新しいカロリー計算 ==========
     final newCalories = currentCalories + addCalories;
@@ -227,6 +231,7 @@ class _CameraScreenState extends State<CameraScreen> {
     int newLevel = currentLevel;
     bool isDegraded = userRow['is_degraded'] ?? false;
     String? degradedPhotoUrl = userRow['degraded_photo_url'];
+    bool skippedAvatarGeneration = false;
 
     // ========== 劣化判定ロジック ==========
     if (newCalories >= 2000) {
@@ -238,11 +243,9 @@ class _CameraScreenState extends State<CameraScreen> {
       isDegraded = true;
 
       // ========== 劣化顔の生成 ==========
-      // まだ劣化顔がない場合、または強制的に更新したい場合はここで生成
+      // Geminiキーのみ運用のため、劣化顔生成は無効化
       if (degradedPhotoUrl == null || degradedPhotoUrl.isEmpty) {
-        degradedPhotoUrl = await _generateDegradedAvatar(
-          baseFaceUrl: normalPhotoUrl,
-        );
+        skippedAvatarGeneration = true;
       }
     } else {
       // まだ2000未満ならレベル0 & isDegraded=false
@@ -252,16 +255,13 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     // ========== Supabaseのusersテーブルを更新 ==========
-    await supabase
-        .from('users')
-        .update({
-          'current_calories': newCalories,
-          'degrade_level': newLevel,
-          'is_degraded': isDegraded,
-          'degraded_photo_url': degradedPhotoUrl,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        })
-        .eq('user_id', userId);
+    await supabase.from('users').update({
+      'current_calories': newCalories,
+      'degrade_level': newLevel,
+      'is_degraded': isDegraded,
+      'degraded_photo_url': degradedPhotoUrl,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('user_id', userId);
 
     // ========== 劣化した場合の通知 ==========
     if (isDegraded && mounted) {
@@ -271,65 +271,13 @@ class _CameraScreenState extends State<CameraScreen> {
           backgroundColor: Colors.red,
         ),
       );
-    }
-  }
-
-  /// OpenAI DALL·E 3 で「劣化した顔アイコン」を生成し、
-  /// Supabase Storage (avatars) に保存して、その公開URLを返す。
-  Future<String?> _generateDegradedAvatar({String? baseFaceUrl}) async {
-    try {
-      // ========== STEP 1: DALL·E 3 で画像生成（URL返却型） ==========
-      final response = await http.post(
-        Uri.parse('https://api.openai.com/v1/images/generations'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer YOUR_OPENAI_API_KEY', // 自分のAPIキーに変更
-        },
-        body: jsonEncode({
-          'model': 'dall-e-3',
-          'prompt':
-              'A realistic avatar icon of a person with thinning hair and bad skin, slightly exaggerated but still suitable as a profile picture',
-          'n': 1, // 1枚生成
-          'size': '512x512', // サイズ
-        }),
-      );
-
-      // APIエラーチェック
-      if (response.statusCode != 200) {
-        throw Exception('劣化顔生成API失敗: ${response.statusCode}');
+      if (skippedAvatarGeneration) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('ℹ️ 劣化アイコン生成は現在スキップ設定です'),
+          ),
+        );
       }
-
-      // レスポンスから生成画像のURLを取得
-      final data = jsonDecode(response.body);
-      final generatedUrl = data['data'][0]['url'] as String;
-
-      // ========== STEP 2: 生成されたURLから画像をダウンロード ==========
-      final imgRes = await http.get(Uri.parse(generatedUrl));
-      if (imgRes.statusCode != 200) {
-        throw Exception('生成画像の取得に失敗: ${imgRes.statusCode}');
-      }
-
-      // ========== STEP 3: Supabase Storage (avatars) にアップロード ==========
-      final userId = supabase.auth.currentUser!.id;
-      final fileName =
-          'avatars/$userId/degraded_${DateTime.now().millisecondsSinceEpoch}.png';
-
-      await supabase.storage.from('avatars').uploadBinary(
-            fileName,
-            imgRes.bodyBytes,
-            fileOptions: const FileOptions(
-              contentType: 'image/png',
-            ),
-          );
-
-      // アップロードした画像の公開URLを取得
-      final publicUrl =
-          supabase.storage.from('avatars').getPublicUrl(fileName);
-
-      return publicUrl;
-    } catch (e) {
-      debugPrint('劣化顔生成エラー: $e');
-      return null;
     }
   }
 
@@ -342,9 +290,9 @@ class _CameraScreenState extends State<CameraScreen> {
       body: Center(
         child: _isAnalyzing
             // ========== AI分析中の表示 ==========
-            ? Column(
+            ? const Column(
                 mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
+                children: [
                   CircularProgressIndicator(),
                   SizedBox(height: 16),
                   Text('AI分析中...'),

@@ -17,9 +17,9 @@ class TrainingCompletionDialog extends StatelessWidget {
   final Map<String, dynamic> userData;
 
   const TrainingCompletionDialog({
-    Key? key,
+    super.key,
     required this.userData,
-  }) : super(key: key);
+  });
 
   Future<Map<String, dynamic>> _getCompletionStats() async {
     final userId = supabase.auth.currentUser!.id;
@@ -39,10 +39,10 @@ class TrainingCompletionDialog extends StatelessWidget {
 
     // 全期間の歩数記録取得
     final steps = await supabase
-        .from('steps')
+        .from('steps_history')
         .select()
         .eq('user_id', userId)
-        .gte('created_at', startDate.toUtc().toIso8601String());
+        .gte('date', startDate.toUtc().toIso8601String().substring(0, 10));
 
     // 体重記録取得
     final weightLogs = await supabase
@@ -55,10 +55,10 @@ class TrainingCompletionDialog extends StatelessWidget {
     final dailyGoal = userData['training_daily_steps_goal'] ?? 0;
     final totalSteps = (steps as List).fold<int>(
       0,
-      (sum, step) => sum + (step['step_count'] as int? ?? 0),
+      (sum, step) => sum + (step['steps'] as int? ?? 0),
     );
     final goalAchievedDays = (steps as List).where((step) {
-      return (step['step_count'] as int? ?? 0) >= dailyGoal;
+      return (step['steps'] as int? ?? 0) >= dailyGoal;
     }).length;
 
     final totalDays = now.difference(startDate).inDays + 1;
@@ -120,8 +120,7 @@ class TrainingCompletionDialog extends StatelessWidget {
         final startWeight = stats['startWeight'] as double;
         final currentWeight = stats['currentWeight'] as double;
         final weightLoss = stats['weightLoss'] as double;
-        // beforePhoto機能は一時的に無効化
-        // final beforePhoto = userData['training_before_photo'] as String?;
+        final beforePhoto = userData['training_before_photo'] as String?;
 
         return Dialog(
           shape: RoundedRectangleBorder(
@@ -134,11 +133,6 @@ class TrainingCompletionDialog extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // 祝福メッセージ
-                  const Text(
-                    '🎉',
-                    style: TextStyle(fontSize: 80),
-                  ),
-                  const SizedBox(height: 16),
                   const Text(
                     '修業完了おめでとうございます！',
                     style: TextStyle(
@@ -161,18 +155,14 @@ class TrainingCompletionDialog extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          Colors.green.shade50,
-                          Colors.green.shade100,
-                        ],
-                      ),
-                      borderRadius: BorderRadius.circular(16),
+                      color: Colors.green.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.green.shade200),
                     ),
                     child: Column(
                       children: [
                         const Text(
-                          '⚖️ 体重変化',
+                          '体重変化',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
@@ -243,26 +233,28 @@ class TrainingCompletionDialog extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
 
-                  // ビフォーアフター写真（一時的に無効化）
-                  // if (beforePhoto != null) ...[
-                  //   const Text(
-                  //     '📸 ビフォー写真',
-                  //     style: TextStyle(
-                  //       fontSize: 16,
-                  //       fontWeight: FontWeight.bold,
-                  //     ),
-                  //   ),
-                  //   const SizedBox(height: 12),
-                  //   ClipRRect(
-                  //     borderRadius: BorderRadius.circular(12),
-                  //     child: Image.network(
-                  //       beforePhoto,
-                  //       height: 200,
-                  //       fit: BoxFit.cover,
-                  //     ),
-                  //   ),
-                  //   const SizedBox(height: 24),
-                  // ],
+                  // ビフォーアフター写真
+                  if (beforePhoto != null && beforePhoto.isNotEmpty) ...[
+                    const Text(
+                      '📸 ビフォー写真',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.network(
+                        beforePhoto,
+                        height: 200,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const Text('画像の読み込みに失敗しました'),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
 
                   // 統計データ
                   Container(
@@ -270,27 +262,28 @@ class TrainingCompletionDialog extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: Colors.orange.shade50,
                       borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.orange.shade200),
                     ),
                     child: Column(
                       children: [
                         const Text(
-                          '📊 修業の記録',
+                          '修業の記録',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
                         const SizedBox(height: 16),
-                        _buildStatRow('📸 総食事記録', '$mealCount回'),
+                        _buildStatRow('総食事記録', '$mealCount回'),
                         const Divider(),
-                        _buildStatRow('🚶 総歩数',
+                        _buildStatRow('総歩数',
                             '${NumberFormat('#,###').format(totalSteps)}歩'),
                         const Divider(),
-                        _buildStatRow('📊 平均歩数',
+                        _buildStatRow('平均歩数',
                             '${NumberFormat('#,###').format(averageSteps)}歩/日'),
                         const Divider(),
                         _buildStatRow(
-                            '✅ 目標達成日数', '$goalAchievedDays/$totalDays日'),
+                            '目標達成日数', '$goalAchievedDays/$totalDays日'),
                         const SizedBox(height: 16),
                         ClipRRect(
                           borderRadius: BorderRadius.circular(10),
