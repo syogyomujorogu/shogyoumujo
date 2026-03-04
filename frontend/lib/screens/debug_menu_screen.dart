@@ -7,7 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'debug_account_switcher_screen.dart';
+import '../services/illustration_tier_manager.dart'; // 業テイア画像管理
 
 final supabase = Supabase.instance.client;
 
@@ -46,16 +48,15 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
 
       // 既存のレコードを削除して新規追加
       await supabase
-          .from('steps')
+          .from('steps_history')
           .delete()
           .eq('user_id', userId)
           .eq('date', dateStr);
 
-      await supabase.from('steps').insert({
+      await supabase.from('steps_history').insert({
         'user_id': userId,
-        'step_count': steps,
+        'steps': steps,
         'date': dateStr,
-        'created_at': DateTime.now().toUtc().toIso8601String(),
       });
 
       _showMessage('歩数を $steps 歩に設定しました');
@@ -307,16 +308,15 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
             (randomVariation ~/ 2);
 
         await supabase
-            .from('steps')
+            .from('steps_history')
             .delete()
             .eq('user_id', userId)
             .eq('date', dateStr);
 
-        await supabase.from('steps').insert({
+        await supabase.from('steps_history').insert({
           'user_id': userId,
-          'step_count': steps,
+          'steps': steps,
           'date': dateStr,
-          'created_at': DateTime.now().toUtc().toIso8601String(),
         });
       }
 
@@ -532,6 +532,136 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
         SnackBar(content: Text(message)),
       );
     }
+  }
+
+  // 🎨 イラスト生成機能を有効/無効
+  Future<void> _toggleIllustrationGeneration() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final currentState =
+          prefs.getBool('illustration_generation_enabled') ?? true;
+      await prefs.setBool('illustration_generation_enabled', !currentState);
+
+      _showMessage(
+        !currentState ? '🎨 イラスト生成機能を無効化しました' : '✅ イラスト生成機能を有効化しました',
+      );
+    } catch (e) {
+      _showMessage('エラー: $e');
+    }
+  }
+
+  // 🎨 イラスト生成を手動トリガー
+  Future<void> _manuallyTriggerIllustrationGeneration() async {
+    setState(() => _isLoading = true);
+    try {
+      final userId = supabase.auth.currentUser!.id;
+
+      // ユーザーのプロフィール情報を取得
+      final userRow = await supabase
+          .from('users')
+          .select('karma, profile_photo_url')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+      if (userRow == null) {
+        _showMessage('ユーザー情報が見つかりません');
+        return;
+      }
+
+      final profilePhotoUrl = userRow['profile_photo_url'] as String?;
+      if (profilePhotoUrl == null || profilePhotoUrl.isEmpty) {
+        _showMessage('プロフィール写真が必要です');
+        return;
+      }
+
+      // 全テイアのイラスト生成をリクエスト
+      int submitted = 0;
+      for (int tier = 1; tier <= 5; tier++) {
+        try {
+          await supabase.from('illustration_requests').upsert({
+            'user_id': userId,
+            'original_photo_url': profilePhotoUrl,
+            'tier': tier,
+            'prompt': _getTierPrompt(tier),
+            'status': 'pending',
+          });
+          submitted++;
+        } catch (e) {
+          print('⚠️ Tier $tier リクエストエラー: $e');
+        }
+      }
+
+      _showMessage(
+        '✨ $submitted個のイラスト生成をリクエストしました\n（夜間バッチで処理予定）',
+      );
+    } catch (e) {
+      _showMessage('エラー: $e');
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // テイア別プロンプト
+  String _getTierPrompt(int tier) {
+    switch (tier) {
+      case 1:
+        return '悪業の顔。ハゲが散らかし、ニキビだらけで、デブで太った体。退廃的で不幸な表情。';
+      case 2:
+        return 'やや不健康な顔。薄毛気味で、ニキビ跡があり、少しデブ気味。疲れた表情。';
+      case 3:
+        return '穏やかな顔。健康的な肌。髪は整っている。通常の状態。';
+      case 4:
+        return '光のある美しい顔。つやのある肌。綺麗な髪。輝く表情。';
+      case 5:
+        return '光輝く仏のイラスト。完璧な美しさ。透き通るような肌。神聖な輝き。';
+      default:
+        return '';
+    }
+  }
+
+  // 🛠️ デバッグ用：月1回制限をリセット
+  Future<void> _resetIllustrationMonthlyLimit() async {
+    setState(() => _isLoading = true);
+    try {
+      final userId = supabase.auth.currentUser!.id;
+      final success =
+          await IllustrationTierManager.resetMonthlyLimitDebug(userId);
+
+      if (success) {
+        _showMessage('🔓 月1回制限をリセットしました！\n再度イラスト生成をリクエスト可能です。');
+      } else {
+        _showMessage('❌ リセット失敗: 詳細はログを確認してください');
+      }
+    } catch (e) {
+      _showMessage('エラー: $e');
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // 🛠️ デバッグ用：プロフィール写真を変更（月1回制限なし・ギャラリー選択可）
+  Future<void> _uploadProfilePhotoDebugFromMenu() async {
+    if (!mounted) return;
+
+    // SharedPreferences でデバッグモードフラグを設定
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('debug_upload_photo_mode', true);
+
+    // デバッグメニュー ← プロフィールメニュー ← プロフィール画面
+    // という階層なので、2段階で戻る
+    Navigator.pop(context); // デバッグメニューを閉じる
+
+    if (!mounted) return;
+
+    // プロフィール画面に戻った状態で fläg が有効になる
+    // プロフィール画面の設定メニューで確認される
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('🛠️ デバッグモード: ギャラリー選択が有効になりました'),
+        backgroundColor: Colors.purple,
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   // ガチャチケットを付与
@@ -910,7 +1040,8 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (context) => const DebugAccountSwitcherScreen(),
+                            builder: (context) =>
+                                const DebugAccountSwitcherScreen(),
                           ),
                         );
                       },
@@ -1224,6 +1355,62 @@ class _DebugMenuScreenState extends State<DebugMenuScreen> {
                       subtitle: const Text('テスト用フレンド3人を追加'),
                       trailing: const Icon(Icons.arrow_forward),
                       onTap: _createDummyFriends,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // 🎨 イラスト生成機能テスト
+                  const Padding(
+                    padding: EdgeInsets.only(left: 8, top: 8, bottom: 8),
+                    child: Text(
+                      '🎨 イラスト生成機能',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.teal,
+                      ),
+                    ),
+                  ),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.image_aspect_ratio,
+                          color: Colors.teal),
+                      title: const Text('イラスト生成: 機能をON/OFF'),
+                      subtitle: const Text('デバッグ用: 生成機能の有効/無効'),
+                      trailing: const Icon(Icons.arrow_forward),
+                      onTap: _toggleIllustrationGeneration,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.image, color: Colors.teal),
+                      title: const Text('イラスト生成: 手動トリガー'),
+                      subtitle: const Text('全テイアの生成をリクエスト'),
+                      trailing: const Icon(Icons.arrow_forward),
+                      onTap: _manuallyTriggerIllustrationGeneration,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Card(
+                    child: ListTile(
+                      leading:
+                          const Icon(Icons.lock_open, color: Colors.orange),
+                      title: const Text('月1回制限: リセット'),
+                      subtitle: const Text('デバッグ用: 制限を解除'),
+                      trailing: const Icon(Icons.arrow_forward),
+                      onTap: _resetIllustrationMonthlyLimit,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Card(
+                    child: ListTile(
+                      leading:
+                          const Icon(Icons.photo_library, color: Colors.purple),
+                      title: const Text('プロフィール写真: 変更（デバッグ版）'),
+                      subtitle: const Text('月1回制限なし・ギャラリー選択可'),
+                      trailing: const Icon(Icons.arrow_forward),
+                      onTap: _uploadProfilePhotoDebugFromMenu,
                     ),
                   ),
                   const SizedBox(height: 16),

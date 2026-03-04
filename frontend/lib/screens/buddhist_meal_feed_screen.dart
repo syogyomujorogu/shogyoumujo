@@ -1,124 +1,98 @@
 // =============================================================================
-// buddhist_meal_feed_screen.dart - 諸行無常ログ（仏教的食事投稿リール）画面
-// =============================================================================
-// このファイルの役割:
-// 1. 友達や自分の食事投稿を仏教的なテーマでリール形式（縦スワイプ）で表示
-// 2. 投稿画像・説明・投稿者情報を表示
-// 3. 「無常を感じる」ボタン（いいね的）やコメント機能
-// 4. Supabaseから食事投稿データを取得
+// buddhist_meal_feed_screen.dart - 諸行無常ログ（ユーザー別食事記録一覧）
 // =============================================================================
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'meal_post_sheet.dart'; // 食事投稿用ボトムシート
-import 'item_usage_dialog.dart'; // アイテム使用ダイアログ
+import 'meal_post_sheet.dart';
+import 'item_usage_dialog.dart';
 
-// Supabaseクライアントのグローバルインスタンス
 final supabase = Supabase.instance.client;
 
-// 諸行無常ログ（仏教的食事投稿リール）画面のStatefulWidget
 class BuddhistMealFeedScreen extends StatefulWidget {
   const BuddhistMealFeedScreen({super.key});
 
   @override
-  State<BuddhistMealFeedScreen> createState() => _BuddhistMealFeedScreenState();
+  State<BuddhistMealFeedScreen> createState() => BuddhistMealFeedScreenState();
 }
 
-// 画面の状態管理クラス
-class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
-  late PageController _pageController; // リール用ページコントローラー
-  List<Map<String, dynamic>> _meals = []; // 食事投稿リスト
-  bool _isLoading = true; // ローディング状態
+class BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
+  List<Map<String, dynamic>> _userGroups = [];
+  Map<String, dynamic>? _myGroup;
+  int _myRank = 0;
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _pageController = PageController();
-    _loadMeals();
+    loadMeals();
   }
 
-  @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
-  }
+  int _calcStreak(List<Map<String, dynamic>> meals) {
+    if (meals.isEmpty) return 0;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
 
-  // 各ユーザーのダイエット統計情報を計算
-  Map<String, dynamic> _calculateDietStats(
-      String userId, List<Map<String, dynamic>> allMeals) {
-    final userMeals = allMeals.where((m) => m['user_id'] == userId).toList();
+    final days = meals
+        .map((m) {
+          final d = DateTime.tryParse(m['created_at'] ?? '');
+          if (d == null) return null;
+          return DateTime(d.year, d.month, d.day);
+        })
+        .whereType<DateTime>()
+        .toSet()
+        .toList()
+      ..sort((a, b) => b.compareTo(a));
 
-    // 今週の投稿数
-    final now = DateTime.now().toUtc();
-    final weekAgo = now.subtract(const Duration(days: 7));
-    final thisWeekMeals = userMeals.where((m) {
-      final createdAt = DateTime.tryParse(m['created_at'] ?? '') ?? now;
-      return createdAt.isAfter(weekAgo);
-    }).length;
+    if (days.isEmpty) return 0;
+    if (today.difference(days.first).inDays > 1) return 0;
 
-    // 連続投稿日数（ストリーク）を計算
-    int streak = 0;
-    DateTime? lastPostDate;
-    final sortedMeals = List<Map<String, dynamic>>.from(userMeals)
-      ..sort((a, b) {
-        final aDate = DateTime.tryParse(a['created_at'] ?? '') ?? now;
-        final bDate = DateTime.tryParse(b['created_at'] ?? '') ?? now;
-        return bDate.compareTo(aDate);
-      });
-
-    for (final meal in sortedMeals) {
-      final mealDate = DateTime.tryParse(meal['created_at'] ?? '');
-      if (mealDate == null) continue;
-
-      final mealDay = DateTime(mealDate.year, mealDate.month, mealDate.day);
-      if (lastPostDate == null) {
-        lastPostDate = mealDay;
-        streak = 1;
+    int streak = 1;
+    for (int i = 1; i < days.length; i++) {
+      if (days[i - 1].difference(days[i]).inDays == 1) {
+        streak++;
       } else {
-        final diff = lastPostDate.difference(mealDay).inDays;
-        if (diff == 1) {
-          streak++;
-          lastPostDate = mealDay;
-        } else if (diff > 1) {
-          break;
-        }
+        break;
       }
     }
-
-    // 頑張りレベルを判定
-    String effortLevel = '修行中';
-    if (thisWeekMeals >= 21) {
-      effortLevel = '悟りの境地';
-    } else if (thisWeekMeals >= 14) {
-      effortLevel = '精進中';
-    } else if (thisWeekMeals >= 7) {
-      effortLevel = '継続中';
-    }
-
-    return {
-      'thisWeekMeals': thisWeekMeals,
-      'streak': streak,
-      'effortLevel': effortLevel,
-      'totalMeals': userMeals.length,
-    };
+    return streak;
   }
 
-  // Supabaseから友達＋自分の食事投稿を取得（24時間以内のみ）
-  Future<void> _loadMeals() async {
+  int _calcThisWeek(List<Map<String, dynamic>> meals) {
+    final weekAgo = DateTime.now().toUtc().subtract(const Duration(days: 7));
+    return meals.where((m) {
+      final d = DateTime.tryParse(m['created_at'] ?? '');
+      return d != null && d.isAfter(weekAgo);
+    }).length;
+  }
+
+  String _effortLevel(int thisWeek) {
+    if (thisWeek >= 21) return '悟りの境地';
+    if (thisWeek >= 14) return '精進中';
+    if (thisWeek >= 7) return '継続中';
+    return '修行中';
+  }
+
+  String _rankMedal(int rank) {
+    if (rank == 1) return '🥇';
+    if (rank == 2) return '🥈';
+    if (rank == 3) return '🥉';
+    return '$rank位';
+  }
+
+  Future<void> loadMeals() async {
     setState(() => _isLoading = true);
     try {
       final userId = supabase.auth.currentUser!.id;
 
-      // friendsテーブルからフレンドIDを取得
       final friendsData = await supabase
           .from('friends')
           .select('friend_id')
           .eq('user_id', userId);
       final friendIds =
-          friendsData.map<String>((row) => row['friend_id'] as String).toList();
+          friendsData.map<String>((r) => r['friend_id'] as String).toList();
       final ids = [...friendIds, userId];
 
-      // ブロック・ミュートユーザーIDを取得
       final blockedRows = await supabase
           .from('blocked_users')
           .select('blocked_user_id')
@@ -128,409 +102,817 @@ class _BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
           .select('muted_user_id')
           .eq('user_id', userId);
       final blockedIds = blockedRows
-          .map<String>((row) => row['blocked_user_id'] as String)
+          .map<String>((r) => r['blocked_user_id'] as String)
           .toSet();
-      final mutedIds = mutedRows
-          .map<String>((row) => row['muted_user_id'] as String)
-          .toSet();
+      final mutedIds =
+          mutedRows.map<String>((r) => r['muted_user_id'] as String).toSet();
 
-      // 友達＋自分の食事投稿を新しい順で取得
       final response = await supabase
           .from('meals')
-          .select(
-              '*, user:users!user_id(display_name, custom_user_id, photo_url)')
+          .select('*')
           .inFilter('user_id', ids)
           .order('created_at', ascending: false);
 
-      // 24時間以内＆ブロック・ミュート除外
-      final now = DateTime.now().toUtc();
-      final filtered = response.where((meal) {
-        final createdAt = DateTime.tryParse(meal['created_at'] ?? '') ?? now;
-        final uid = meal['user_id'] as String?;
-        return now.difference(createdAt).inHours < 24 &&
-            uid != null &&
+      final filtered = response.where((m) {
+        final uid = m['user_id'] as String?;
+        return uid != null &&
             !blockedIds.contains(uid) &&
             !mutedIds.contains(uid);
       }).toList();
 
-      // 各投稿にダイエット統計情報を追加
-      final mealsWithStats = filtered.map((meal) {
-        final stats = _calculateDietStats(meal['user_id'], response);
-        return {...meal, 'dietStats': stats};
+      final userInfoMap = <String, Map<String, dynamic>>{};
+      for (final uid in ids) {
+        if (blockedIds.contains(uid) || mutedIds.contains(uid)) continue;
+        final info = await supabase
+            .from('users')
+            .select('user_id, display_name, custom_user_id, photo_url')
+            .eq('user_id', uid)
+            .maybeSingle();
+        if (info != null) userInfoMap[uid] = info;
+      }
+
+      // 全員分の体重記録を取得（先週比計算用）
+      final twoWeeksAgo =
+          DateTime.now().toUtc().subtract(const Duration(days: 14));
+      final allWeightLogs = await supabase
+          .from('weight_logs')
+          .select('user_id, weight, created_at')
+          .inFilter('user_id', ids)
+          .gte('created_at', twoWeeksAgo.toIso8601String())
+          .order('created_at', ascending: true);
+
+      // ユーザーごとに体重の先週比を計算
+      final now2 = DateTime.now().toUtc();
+      final oneWeekAgo = now2.subtract(const Duration(days: 7));
+
+      Map<String, double?> weightChangeMap = {};
+      Map<String, double?> latestWeightMap = {};
+
+      for (final uid in ids) {
+        final logs = allWeightLogs.where((w) => w['user_id'] == uid).toList();
+        final lastWeekLogs = logs.where((w) {
+          final d = DateTime.tryParse(w['created_at'] ?? '');
+          return d != null && d.isBefore(oneWeekAgo);
+        }).toList();
+        final thisWeekLogs = logs.where((w) {
+          final d = DateTime.tryParse(w['created_at'] ?? '');
+          return d != null && d.isAfter(oneWeekAgo);
+        }).toList();
+
+        if (lastWeekLogs.isNotEmpty && thisWeekLogs.isNotEmpty) {
+          final lastW = (lastWeekLogs.last['weight'] as num).toDouble();
+          final thisW = (thisWeekLogs.last['weight'] as num).toDouble();
+          weightChangeMap[uid] = thisW - lastW;
+          latestWeightMap[uid] = thisW;
+        } else if (thisWeekLogs.isNotEmpty) {
+          latestWeightMap[uid] =
+              (thisWeekLogs.last['weight'] as num).toDouble();
+          weightChangeMap[uid] = null;
+        } else if (lastWeekLogs.isNotEmpty) {
+          latestWeightMap[uid] =
+              (lastWeekLogs.last['weight'] as num).toDouble();
+          weightChangeMap[uid] = null;
+        } else {
+          latestWeightMap[uid] = null;
+          weightChangeMap[uid] = null;
+        }
+      }
+
+      final groupMap = <String, List<Map<String, dynamic>>>{};
+      for (final meal in filtered) {
+        final uid = meal['user_id'] as String;
+        groupMap.putIfAbsent(uid, () => []).add(meal);
+      }
+
+      final groups = groupMap.entries.map((e) {
+        final uid = e.key;
+        final userMeals = e.value;
+        final streak = _calcStreak(userMeals);
+        final thisWeek = _calcThisWeek(userMeals);
+        return {
+          'userId': uid,
+          'userInfo': userInfoMap[uid] ?? {},
+          'meals': userMeals,
+          'streak': streak,
+          'thisWeek': thisWeek,
+          'totalMeals': userMeals.length,
+          'effortLevel': _effortLevel(thisWeek),
+          'isMe': uid == userId,
+          'weightChange': weightChangeMap[uid],
+          'latestWeight': latestWeightMap[uid],
+        };
       }).toList();
+
+      // 体重減少量順（マイナスが大きいほど上位）→ 記録なしは末尾
+      groups.sort((a, b) {
+        final aChange = a['weightChange'] as double?;
+        final bChange = b['weightChange'] as double?;
+        // 両方記録あり → 減少量が多い（より小さい値）が上位
+        if (aChange != null && bChange != null) {
+          return aChange.compareTo(bChange); // 小さい値（減少）が上位
+        }
+        // 片方だけ記録あり → 記録ある方が上位
+        if (aChange != null) return -1;
+        if (bChange != null) return 1;
+        // 両方記録なし → 連続日数順
+        final s = (b['streak'] as int).compareTo(a['streak'] as int);
+        if (s != 0) return s;
+        return (b['totalMeals'] as int).compareTo(a['totalMeals'] as int);
+      });
+
+      final myIndex = groups.indexWhere((g) => g['isMe'] == true);
 
       if (!mounted) return;
       setState(() {
-        _meals = mealsWithStats;
+        _userGroups = groups;
+        _myGroup = myIndex >= 0 ? groups[myIndex] : null;
+        _myRank = myIndex >= 0 ? myIndex + 1 : 0;
         _isLoading = false;
       });
     } catch (e) {
+      print('❌ loadMeals エラー: $e');
       if (!mounted) return;
       setState(() {
-        _meals = [];
+        _userGroups = [];
         _isLoading = false;
       });
     }
   }
 
-  // 無常を感じる（いいね機能）- 24時間以内の投稿のみ有効
   Future<void> _feelImpermanence(String mealId) async {
     try {
       final userId = supabase.auth.currentUser!.id;
-
-      // 既にいいねしているかチェック
       final existing = await supabase
           .from('meal_likes')
           .select()
           .eq('meal_id', mealId)
           .eq('user_id', userId)
           .maybeSingle();
-
       if (existing != null) {
-        // 既にいいねしている場合は削除（取り消し）
         await supabase
             .from('meal_likes')
             .delete()
             .eq('meal_id', mealId)
             .eq('user_id', userId);
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('無常を取り消しました'),
-              duration: Duration(seconds: 1),
-            ),
-          );
-        }
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('無常を取り消しました'), duration: Duration(seconds: 1)));
       } else {
-        // いいねを追加
-        await supabase.from('meal_likes').insert({
-          'meal_id': mealId,
-          'user_id': userId,
-        });
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
+        await supabase
+            .from('meal_likes')
+            .insert({'meal_id': mealId, 'user_id': userId});
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
               content: Text('🙏 無常を感じました'),
               backgroundColor: Colors.orange,
-              duration: Duration(seconds: 1),
-            ),
-          );
-        }
+              duration: Duration(seconds: 1)));
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('エラー: $e')),
-        );
-      }
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('エラー: $e')));
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // ローディング中はインジケーター
     if (_isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    // 投稿がない場合
-    if (_meals.isEmpty) {
+
+    if (_userGroups.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text('諸行無常ログ')),
         body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.self_improvement,
-                    size: 80, color: Colors.orange[300]),
-                const SizedBox(height: 24),
-                const Text(
-                  'まだ食事の記録がありません',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  '食事を投稿すると、ここに統計情報が表示されます：',
-                  style: TextStyle(fontSize: 14, color: Colors.grey),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.orange[50],
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.orange[200]!),
-                  ),
-                  child: const Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('📊 表示される統計情報',
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 16)),
-                      SizedBox(height: 12),
-                      Text('🔥 連続記録日数（ストリーク）\n   毎日連続で投稿している日数'),
-                      SizedBox(height: 8),
-                      Text('📅 今週の投稿数\n   過去7日間の食事記録回数'),
-                      SizedBox(height: 8),
-                      Text('🍽️ 総記録数\n   これまでの総投稿数'),
-                      SizedBox(height: 8),
-                      Text('⭐ 修行レベル\n   投稿数に応じて自動判定\n   (修行中→継続中→精進中→悟りの境地)'),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.self_improvement, size: 80, color: Colors.orange[300]),
+              const SizedBox(height: 24),
+              const Text('まだ食事の記録がありません',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text('食事を投稿するとここに表示されます',
+                  style: TextStyle(color: Colors.grey)),
+            ],
           ),
+        ),
+        floatingActionButton: FloatingActionButton.extended(
+          onPressed: () async {
+            await showModalBottomSheet(
+                context: context,
+                isScrollControlled: true,
+                builder: (c) => MealPostSheet(onPosted: loadMeals));
+          },
+          icon: const Icon(Icons.add),
+          label: const Text('食事を記録'),
+          backgroundColor: Colors.orange,
         ),
       );
     }
-    // リール形式で食事投稿を縦スワイプ表示
-    // 食事投稿リール画面本体
+
     return Scaffold(
-      appBar: AppBar(title: const Text('諸行無常ログ')),
-      body: PageView.builder(
-        controller: _pageController,
-        scrollDirection: Axis.vertical,
-        itemCount: _meals.length,
-        itemBuilder: (context, index) {
-          final meal = _meals[index];
-          final user = meal['user'] ?? {};
-          final photoUrl = meal['photo_url'] as String?;
-          final description = meal['description'] as String?;
-          final displayName = user['display_name'] ?? '無名の修行者';
-          final userPhoto = user['photo_url'] as String?;
-          final dietStats = meal['dietStats'] as Map<String, dynamic>? ?? {};
-
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              // 投稿画像
-              if (photoUrl != null && photoUrl.isNotEmpty)
-                Image.network(photoUrl, fit: BoxFit.cover)
-              else
-                Container(color: Colors.grey[300]),
-              // ダイエット統計情報カード（上部）
-              Positioned(
-                top: 60,
-                left: 16,
-                right: 16,
-                child: Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade50,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.orange.shade300),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        '$displayName の修行状況',
-                        style: const TextStyle(
-                          color: Colors.black87,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          _buildStatItem(
-                            '${dietStats['streak'] ?? 0}日',
-                            '連続記録',
-                            Icons.local_fire_department,
-                          ),
-                          _buildStatItem(
-                            '${dietStats['thisWeekMeals'] ?? 0}回',
-                            '今週の投稿',
-                            Icons.calendar_today,
-                          ),
-                          _buildStatItem(
-                            '${dietStats['totalMeals'] ?? 0}食',
-                            '総記録数',
-                            Icons.restaurant,
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.shade100,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          '修行レベル: ${dietStats['effortLevel'] ?? '修行中'}',
-                          style: const TextStyle(
-                            color: Colors.orange,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              // 投稿情報のオーバーレイ
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  color: Colors.black.withOpacity(0.5),
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        children: [
-                          CircleAvatar(
-                            backgroundImage:
-                                userPhoto != null && userPhoto.isNotEmpty
-                                    ? NetworkImage(userPhoto)
-                                    : null,
-                            child: userPhoto == null
-                                ? const Icon(Icons.person)
-                                : null,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(displayName,
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      if (description != null && description.isNotEmpty)
-                        Text(description,
-                            style: const TextStyle(color: Colors.white)),
-                      const SizedBox(height: 12),
-                      // 24時間以内の投稿のみ慈悲（無常）ボタンを有効化
-                      Row(
-                        children: [
-                          Builder(
-                            builder: (context) {
-                              final createdAt =
-                                  DateTime.tryParse(meal['created_at'] ?? '') ??
-                                      DateTime.now().toUtc();
-                              final isWithin24h = DateTime.now()
-                                      .toUtc()
-                                      .difference(createdAt)
-                                      .inHours <
-                                  24;
-                              return ElevatedButton.icon(
-                                onPressed: isWithin24h
-                                    ? () =>
-                                        _feelImpermanence(meal['id'].toString())
-                                    : null, // 24時間超は無効
-                                icon: const Icon(Icons.self_improvement),
-                                label: Text(isWithin24h ? '無常を感じる' : '期限切れ'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: isWithin24h
-                                      ? Colors.orange[700]
-                                      : Colors.grey,
-                                  foregroundColor: Colors.white,
-                                ),
-                              );
-                            },
-                          ),
-                          const SizedBox(width: 8),
-                          // アイテム使用ボタン
-                          Builder(
-                            builder: (context) {
-                              final currentUserId =
-                                  supabase.auth.currentUser?.id;
-                              final mealOwnerId = meal['user_id'] as String;
-                              final isOwnMeal = currentUserId == mealOwnerId;
-
-                              return ElevatedButton.icon(
-                                onPressed: () async {
-                                  final result = await showDialog<bool>(
-                                    context: context,
-                                    builder: (context) => ItemUsageDialog(
-                                      mealId: meal['id'].toString(),
-                                      mealOwnerId: mealOwnerId,
-                                      currentCalories: meal['calories'] as int,
-                                      isOwnMeal: isOwnMeal,
-                                    ),
-                                  );
-                                  // アイテム使用後にリストを再読み込み
-                                  if (result == true) {
-                                    _loadMeals();
-                                  }
-                                },
-                                icon: Icon(isOwnMeal
-                                    ? Icons.favorite
-                                    : Icons.whatshot),
-                                label: Text(isOwnMeal ? 'カロリー減' : 'カロリー増'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: isOwnMeal
-                                      ? Colors.green[700]
-                                      : Colors.orange[700],
-                                  foregroundColor: Colors.white,
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
+      appBar: AppBar(
+        title: const Text('諸行無常ログ'),
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        elevation: 0,
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: loadMeals)
+        ],
       ),
-      // 画面右下に食事投稿用のFABを追加
+      backgroundColor: Colors.grey[100],
+      body: RefreshIndicator(
+        onRefresh: loadMeals,
+        child: ListView(
+          padding: const EdgeInsets.all(12),
+          children: [
+            // 自分のカード（常に最上部）
+            if (_myGroup != null) ...[
+              _buildMyCard(_myGroup!, _myRank),
+              const SizedBox(height: 20),
+            ],
+
+            // ランキングヘッダー
+            Row(
+              children: [
+                const Icon(Icons.emoji_events, color: Colors.amber, size: 20),
+                const SizedBox(width: 6),
+                const Text('修行ランキング',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const SizedBox(width: 6),
+                Text('連続投稿日数順',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            // ランキングリスト
+            ..._userGroups.asMap().entries.map((entry) {
+              final rank = entry.key + 1;
+              final group = entry.value;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _buildRankCard(group, rank),
+              );
+            }),
+
+            const SizedBox(height: 80),
+          ],
+        ),
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () async {
-          // 食事投稿ボトムシートを表示し、投稿後にリストを再取得
           await showModalBottomSheet(
-            context: context,
-            isScrollControlled: true,
-            builder: (context) => MealPostSheet(onPosted: _loadMeals),
-          );
+              context: context,
+              isScrollControlled: true,
+              builder: (c) => MealPostSheet(onPosted: loadMeals));
         },
         icon: const Icon(Icons.add),
         label: const Text('食事を記録'),
-        tooltip: '新しい食事を投稿',
+        backgroundColor: Colors.orange,
+        foregroundColor: Colors.white,
       ),
     );
   }
 
-  // 統計情報の各項目ウィジェット
-  Widget _buildStatItem(String value, String label, IconData icon) {
+  // ========== 自分のカード（上部固定・大きめ）==========
+  Widget _buildMyCard(Map<String, dynamic> group, int rank) {
+    final userInfo = group['userInfo'] as Map<String, dynamic>;
+    final meals = group['meals'] as List<Map<String, dynamic>>;
+    final streak = group['streak'] as int;
+    final thisWeek = group['thisWeek'] as int;
+    final totalMeals = group['totalMeals'] as int;
+    final effortLevel = group['effortLevel'] as String;
+    final displayName = userInfo['display_name'] as String? ?? 'あなた';
+    final photoUrl = userInfo['photo_url'] as String?;
+    final recentMeals = meals.take(5).toList();
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Colors.orange.shade400, Colors.deepOrange.shade300],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.orange.withOpacity(0.35),
+              blurRadius: 12,
+              offset: const Offset(0, 4))
+        ],
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 26,
+                backgroundImage: photoUrl != null && photoUrl.isNotEmpty
+                    ? NetworkImage(photoUrl)
+                    : null,
+                backgroundColor: Colors.white30,
+                child: photoUrl == null
+                    ? const Icon(Icons.person, color: Colors.white)
+                    : null,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(displayName,
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                              color: Colors.white24,
+                              borderRadius: BorderRadius.circular(10)),
+                          child: const Text('あなた',
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 11)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(effortLevel,
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 13)),
+                  ],
+                ),
+              ),
+              // 順位バッジ
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(20)),
+                child: Text(
+                  rank <= 3 ? _rankMedal(rank) : '$rank位',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: rank <= 3 ? 22 : 16,
+                      fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _statChip('🔥', '$streak日', '連続記録'),
+              _statChip('📅', '$thisWeek回', '今週'),
+              _statChip('🍽️', '$totalMeals回', '総記録'),
+            ],
+          ),
+          // 体重増減カード
+          Builder(builder: (context) {
+            final wChange = group['weightChange'] as double?;
+            final latest = group['latestWeight'] as double?;
+            if (latest == null) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(top: 14),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    const Text('⚖️', style: TextStyle(fontSize: 20)),
+                    const SizedBox(width: 10),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('現在の体重',
+                            style:
+                                TextStyle(color: Colors.white70, fontSize: 11)),
+                        Text('${latest.toStringAsFixed(1)} kg',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    if (wChange != null) ...[
+                      const SizedBox(width: 20),
+                      Container(width: 1, height: 32, color: Colors.white30),
+                      const SizedBox(width: 20),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('先週比',
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 11)),
+                          Row(
+                            children: [
+                              Icon(
+                                wChange < 0
+                                    ? Icons.trending_down
+                                    : wChange > 0
+                                        ? Icons.trending_up
+                                        : Icons.trending_flat,
+                                color: wChange < 0
+                                    ? Colors.greenAccent
+                                    : wChange > 0
+                                        ? Colors.redAccent
+                                        : Colors.white70,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                '${wChange >= 0 ? '+' : ''}${wChange.toStringAsFixed(1)} kg',
+                                style: TextStyle(
+                                  color: wChange < 0
+                                      ? Colors.greenAccent
+                                      : wChange > 0
+                                          ? Colors.redAccent
+                                          : Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          }),
+          if (recentMeals.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            const Text('最近の記録',
+                style: TextStyle(color: Colors.white70, fontSize: 12)),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 60,
+              child: Row(
+                children: [
+                  ...recentMeals.take(4).map((meal) {
+                    final url = meal['photo_url'] as String?;
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: url != null && url.isNotEmpty
+                            ? Image.network(url,
+                                width: 60, height: 60, fit: BoxFit.cover)
+                            : Container(
+                                width: 60,
+                                height: 60,
+                                color: Colors.white24,
+                                child: const Icon(Icons.restaurant,
+                                    color: Colors.white54)),
+                      ),
+                    );
+                  }),
+                  if (meals.length > 4)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        width: 60,
+                        height: 60,
+                        color: Colors.black26,
+                        child: Center(
+                            child: Text('+${meals.length - 4}',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16))),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ========== ランキングカード ==========
+  Widget _buildRankCard(Map<String, dynamic> group, int rank) {
+    final userInfo = group['userInfo'] as Map<String, dynamic>;
+    final meals = group['meals'] as List<Map<String, dynamic>>;
+    final streak = group['streak'] as int;
+    final thisWeek = group['thisWeek'] as int;
+    final totalMeals = group['totalMeals'] as int;
+    final effortLevel = group['effortLevel'] as String;
+    final displayName = userInfo['display_name'] as String? ?? '修行者';
+    final photoUrl = userInfo['photo_url'] as String?;
+    final isMe = group['isMe'] == true;
+    final weightChange = group['weightChange'] as double?;
+    final latestWeight = group['latestWeight'] as double?;
+    final recentMeals = meals.take(4).toList();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: isMe ? Colors.orange.shade50 : Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+            color: isMe ? Colors.orange.shade300 : Colors.grey.shade200,
+            width: isMe ? 2 : 1),
+        boxShadow: [
+          BoxShadow(
+              color: isMe
+                  ? Colors.orange.withOpacity(0.12)
+                  : Colors.black.withOpacity(0.04),
+              blurRadius: 6,
+              offset: const Offset(0, 2))
+        ],
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              // 順位
+              SizedBox(
+                width: 42,
+                child: Center(
+                  child: Text(
+                    rank <= 3 ? _rankMedal(rank) : '$rank',
+                    style: TextStyle(
+                        fontSize: rank <= 3 ? 22 : 15,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.grey[700]),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // アバター
+              CircleAvatar(
+                radius: 20,
+                backgroundImage: photoUrl != null && photoUrl.isNotEmpty
+                    ? NetworkImage(photoUrl)
+                    : null,
+                backgroundColor: Colors.grey[200],
+                child: photoUrl == null
+                    ? const Icon(Icons.person, size: 18)
+                    : null,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          displayName,
+                          style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: isMe
+                                  ? Colors.orange.shade800
+                                  : Colors.black87),
+                        ),
+                        if (isMe) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                                color: Colors.orange.shade200,
+                                borderRadius: BorderRadius.circular(8)),
+                            child: const Text('あなた',
+                                style: TextStyle(
+                                    fontSize: 10, color: Colors.deepOrange)),
+                          ),
+                        ],
+                      ],
+                    ),
+                    Text(effortLevel,
+                        style:
+                            TextStyle(fontSize: 11, color: Colors.grey[500])),
+                  ],
+                ),
+              ),
+              // 連続日数
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: streak > 0
+                      ? Colors.orange.shade100
+                      : Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.local_fire_department,
+                        size: 14,
+                        color: streak > 0 ? Colors.orange : Colors.grey),
+                    const SizedBox(width: 3),
+                    Text('$streak日',
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: streak > 0
+                                ? Colors.orange.shade800
+                                : Colors.grey)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: Wrap(
+                  spacing: 12,
+                  runSpacing: 4,
+                  children: [
+                    _statLine('📅 今週', '$thisWeek回'),
+                    _statLine('🍽️ 総数', '$totalMeals回'),
+                    if (latestWeight != null)
+                      _weightStatLine(latestWeight, weightChange),
+                  ],
+                ),
+              ),
+              // サムネイル
+              Row(
+                children: [
+                  ...recentMeals.map((meal) {
+                    final url = meal['photo_url'] as String?;
+                    return Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: GestureDetector(
+                        onLongPress: () => _showMealActions(meal),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: url != null && url.isNotEmpty
+                              ? Image.network(url,
+                                  width: 44, height: 44, fit: BoxFit.cover)
+                              : Container(
+                                  width: 44,
+                                  height: 44,
+                                  color: Colors.grey[200],
+                                  child: const Icon(Icons.restaurant,
+                                      size: 18, color: Colors.grey)),
+                        ),
+                      ),
+                    );
+                  }),
+                  if (meals.length > 4)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                            color: Colors.grey[300],
+                            borderRadius: BorderRadius.circular(6)),
+                        child: Center(
+                            child: Text('+${meals.length - 4}',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.black54))),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showMealActions(Map<String, dynamic> meal) {
+    final currentUserId = supabase.auth.currentUser?.id;
+    final mealOwnerId = meal['user_id'] as String;
+    final isOwnMeal = currentUserId == mealOwnerId;
+    final createdAt =
+        DateTime.tryParse(meal['created_at'] ?? '') ?? DateTime.now().toUtc();
+    final isWithin24h =
+        DateTime.now().toUtc().difference(createdAt).inHours < 24;
+
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isWithin24h)
+              ListTile(
+                leading:
+                    const Icon(Icons.self_improvement, color: Colors.orange),
+                title: const Text('無常を感じる'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _feelImpermanence(meal['id'].toString());
+                },
+              ),
+            ListTile(
+              leading: Icon(isOwnMeal ? Icons.favorite : Icons.whatshot,
+                  color: isOwnMeal ? Colors.green : Colors.orange),
+              title: Text(isOwnMeal ? 'カロリー減アイテムを使う' : 'カロリー増アイテムを使う'),
+              onTap: () async {
+                Navigator.pop(context);
+                final result = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => ItemUsageDialog(
+                    mealId: meal['id'].toString(),
+                    mealOwnerId: mealOwnerId,
+                    currentCalories: meal['calories'] as int? ?? 0,
+                    isOwnMeal: isOwnMeal,
+                  ),
+                );
+                if (result == true) loadMeals();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statChip(String emoji, String value, String label) {
     return Column(
       children: [
-        Icon(icon, color: Colors.orange, size: 24),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: const TextStyle(
-            color: Colors.black87,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        Text(
-          label,
-          style: TextStyle(
-            color: Colors.grey.shade600,
-            fontSize: 12,
-          ),
-        ),
+        Text(emoji, style: const TextStyle(fontSize: 18)),
+        const SizedBox(height: 2),
+        Text(value,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold)),
+        Text(label,
+            style: const TextStyle(color: Colors.white70, fontSize: 11)),
+      ],
+    );
+  }
+
+  Widget _statLine(String label, String value) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+        const SizedBox(width: 4),
+        Text(value,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+      ],
+    );
+  }
+
+  // 体重増減表示ウィジェット（ランキングカード用）
+  Widget _weightStatLine(double latest, double? change) {
+    final changeColor = change == null
+        ? Colors.grey
+        : change < 0
+            ? Colors.green
+            : change > 0
+                ? Colors.red
+                : Colors.grey;
+    final changeIcon = change == null
+        ? Icons.remove
+        : change < 0
+            ? Icons.trending_down
+            : change > 0
+                ? Icons.trending_up
+                : Icons.trending_flat;
+    final changeText = change == null
+        ? '先週比なし'
+        : '${change >= 0 ? '+' : ''}${change.toStringAsFixed(1)}kg';
+
+    return Wrap(
+      spacing: 4,
+      runSpacing: 2,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text('⚖️ ${latest.toStringAsFixed(1)}kg',
+            style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey[700],
+                fontWeight: FontWeight.bold)),
+        Icon(changeIcon, size: 13, color: changeColor),
+        Text(changeText,
+            style: TextStyle(
+                fontSize: 11, color: changeColor, fontWeight: FontWeight.bold)),
       ],
     );
   }

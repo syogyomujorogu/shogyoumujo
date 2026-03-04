@@ -102,6 +102,25 @@ class _MyDataScreenState extends State<MyDataScreen> {
   }
 
   // 統計を計算
+  /// 業（karma）の値に応じて色を計算（赤→紫→金色）
+  Color _getKarmaColor(int karma) {
+    // 0: 赤色, 50: 紫色, 100: 金色へのグラデーション
+    if (karma < 50) {
+      // 0-50: 赤から紫へ（#FF4444 → #9C27B0）
+      return Color.lerp(
+        const Color(0xFFFF4444), // 赤
+        const Color(0xFF9C27B0), // 紫
+        (karma / 50.0).clamp(0.0, 1.0),
+      )!;
+    } else {
+      // 50-100: 紫から金色へ（#9C27B0 → #FFD700）
+      return Color.lerp(
+        const Color(0xFF9C27B0), // 紫
+        const Color(0xFFFFD700), // 金色
+        ((karma - 50) / 50.0).clamp(0.0, 1.0),
+      )!;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -109,13 +128,6 @@ class _MyDataScreenState extends State<MyDataScreen> {
       appBar: AppBar(
         title: const Text('自分のデータ'),
         backgroundColor: Colors.blue,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.menu, color: Colors.white),
-            tooltip: '設定',
-            onPressed: () => _showSettingsMenu(context),
-          ),
-        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -130,7 +142,168 @@ class _MyDataScreenState extends State<MyDataScreen> {
                     // ヘッダー
                     _buildHeader(),
                     const SizedBox(height: 24),
-                    // ...（以下省略、既存のUIビルドロジック）...
+
+                    // ========== 業（Karma）スコア表示 ==========
+                    _buildStatCard(
+                      '業（カルマ）スコア',
+                      _getKarmaColor(_userData?['karma'] ?? 0), // 動的色
+                      [
+                        Text(
+                          '${_userData?['karma'] ?? 0} / 100',
+                          style: const TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: LinearProgressIndicator(
+                            value: ((_userData?['karma'] ?? 0) / 100)
+                                .clamp(0.0, 1.0),
+                            minHeight: 8,
+                            backgroundColor: Colors.grey.shade200,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                                _getKarmaColor(_userData?['karma'] ?? 0)),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // ========== 食事記録 ==========
+                    _buildStatCard(
+                      '食事記録',
+                      Colors.orange,
+                      [
+                        Text(
+                          '$_totalMeals回',
+                          style: const TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.orange,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '連続：$_consecutiveDays日',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // ========== 歩数統計 ==========
+                    _buildStatCard(
+                      '歩数統計',
+                      Colors.blue,
+                      [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '総歩数',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                ),
+                                Text(
+                                  '$_totalSteps歩',
+                                  style: const TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '平均',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                ),
+                                Text(
+                                  '$_avgSteps歩',
+                                  style: const TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        if (_userData?['training_started'] == true) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            '目標達成: $_achievedDays日 (${_achievementRate.toStringAsFixed(1)}%)',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.blue.shade600,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // ========== 体重変化 ==========
+                    if (_weights.isNotEmpty)
+                      _buildStatCard(
+                        '体重',
+                        Colors.green,
+                        [
+                          if (_weights.last['weight'] != null)
+                            Text(
+                              '${_toDouble(_weights.last['weight'])?.toStringAsFixed(1) ?? '未計測'} kg',
+                              style: const TextStyle(
+                                fontSize: 28,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green,
+                              ),
+                            ),
+                          if (_weightChange != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    _weightChange! < 0
+                                        ? Icons.trending_down
+                                        : Icons.trending_up,
+                                    color: _weightChange! < 0
+                                        ? Colors.green
+                                        : Colors.red,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${_weightChange! >= 0 ? '+' : ''}${_weightChange!.toStringAsFixed(1)} kg',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: _weightChange! < 0
+                                          ? Colors.green
+                                          : Colors.red,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
                   ],
                 ),
               ),
@@ -138,41 +311,16 @@ class _MyDataScreenState extends State<MyDataScreen> {
     );
   }
 
-  // 設定メニュー表示
-  void _showSettingsMenu(BuildContext context) async {
-    final prefs = await SharedPreferences.getInstance();
-    final keepAspectRatio = prefs.getBool('reel_keep_aspect_ratio') ?? false;
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.settings, color: Colors.blue),
-              title: const Text('リール（法輪）表示設定'),
-              onTap: () async {
-                Navigator.pop(context);
-                await showDialog(
-                  context: context,
-                  builder: (context) => ReelSettingsDialog(
-                    initialKeepAspectRatio: keepAspectRatio,
-                    onChanged: (v) async {
-                      final prefs = await SharedPreferences.getInstance();
-                      await prefs.setBool('reel_keep_aspect_ratio', v);
-                    },
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-  // （重複・壊れたStateクラス断片は全て削除済み）
-
   // 統計を計算
+  /// int または double を double に安全に変換するヘルパーメソッド
+  double? _toDouble(dynamic value) {
+    if (value == null) return null;
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is String) return double.tryParse(value);
+    return null;
+  }
+
   void _calculateStats() {
     // 総食事記録数
     _totalMeals = _meals.length;
@@ -195,8 +343,10 @@ class _MyDataScreenState extends State<MyDataScreen> {
 
     // 体重変化
     if (_weights.length >= 2) {
-      final firstWeight = _weights.first['weight'] as double?;
-      final lastWeight = _weights.last['weight'] as double?;
+      final firstWeightRaw = _weights.first['weight'];
+      final lastWeightRaw = _weights.last['weight'];
+      final firstWeight = _toDouble(firstWeightRaw);
+      final lastWeight = _toDouble(lastWeightRaw);
       if (firstWeight != null && lastWeight != null) {
         _weightChange = lastWeight - firstWeight;
       }

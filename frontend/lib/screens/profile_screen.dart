@@ -16,6 +16,8 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:convert';
 import '../helpers/gemini_helper.dart';
+import '../services/stability_ai_service.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:image/image.dart' as img;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'training_completion_dialog.dart';
@@ -25,6 +27,8 @@ import 'unified_notifications_screen.dart';
 import 'friend_profile_screen.dart';
 import 'reel_settings_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../widgets/icon_degrade_filter.dart';
+import '../services/illustration_tier_manager.dart'; // 業テイア画像管理
 
 // Supabaseクライアントのグローバルインスタンス
 final supabase = Supabase.instance.client;
@@ -52,6 +56,10 @@ class _ProfileScreenState extends State<ProfileScreen>
   bool _showDebugMenu = false; // デバッグメニュー表示フラグ
   Map<String, dynamic>? _equippedBadge; // 装備中のバッジ
   int _unreadNotificationsCount = 0; // 未読通知数
+  int _currentKarmaTier = 3; // 現在の業テイア (1-5)
+  Map<int, String?> _tierImageUrls = {}; // 各テイア画像 URL (1=上仏, 5=他化)
+  bool _isRequestingIllustration = false; // 画像生成中フラグ
+  String _illustrationRequestStatus = 'idle'; // pending/completed/failed/idle
 
   @override
   void initState() {
@@ -124,6 +132,25 @@ class _ProfileScreenState extends State<ProfileScreen>
         if (mounted) {
           setState(() {
             _userData = response;
+            // 業スコアからテイアを計算
+            final karma = (response['karma'] ?? 50) as int;
+            _currentKarmaTier = IllustrationTierManager.getKarmaTier(karma);
+
+            // 各テイアの画像URLをロード
+            _tierImageUrls = {
+              1: response['profile_illustration_tier1'] as String?,
+              2: response['profile_illustration_tier2'] as String?,
+              3: response['profile_illustration_tier3'] as String?,
+              4: response['profile_illustration_tier4'] as String?,
+              5: response['profile_illustration_tier5'] as String?,
+            };
+
+            // リクエストステータスをチェック（アプリ再起動時用）
+            if (_tierImageUrls[_currentKarmaTier] == null) {
+              _illustrationRequestStatus = 'pending';
+            } else {
+              _illustrationRequestStatus = 'completed';
+            }
           });
         }
       } else {
@@ -153,17 +180,34 @@ class _ProfileScreenState extends State<ProfileScreen>
       final userId = supabase.auth.currentUser!.id;
 
       // 自分宛ての保留中のリクエストを取得
-      final response = await supabase
-          .from('mercy_requests')
-          .select('*, requester:users!requester_id(display_name, email)')
-          .eq('receiver_id', userId)
-          .eq('status', 'pending')
-          .order('created_at', ascending: false);
+      // （ジョイン失敗時は空リストで継続）
+      try {
+        final response = await supabase
+            .from('mercy_requests')
+            .select('*, requester:users!requester_id(display_name, email)')
+            .eq('receiver_id', userId)
+            .eq('status', 'pending')
+            .order('created_at', ascending: false);
 
-      if (mounted) {
-        setState(() {
-          _mercyRequests = List<Map<String, dynamic>>.from(response);
-        });
+        if (mounted) {
+          setState(() {
+            _mercyRequests = List<Map<String, dynamic>>.from(response);
+          });
+        }
+      } catch (selectError) {
+        // ジョイン失敗時は users テーブルなしで取得
+        final fallbackResponse = await supabase
+            .from('mercy_requests')
+            .select()
+            .eq('receiver_id', userId)
+            .eq('status', 'pending')
+            .order('created_at', ascending: false);
+
+        if (mounted) {
+          setState(() {
+            _mercyRequests = List<Map<String, dynamic>>.from(fallbackResponse);
+          });
+        }
       }
     } catch (e) {
       print('⚠️ 慈悲リクエスト読み込みエラー（スキップ）: $e');
@@ -475,35 +519,113 @@ class _ProfileScreenState extends State<ProfileScreen>
   /// プロフィール写真をアップロードする関数
   Future<void> _uploadProfilePhoto() async {
     try {
-      // 選択肢ダイアログ（カメラ or ギャラリー）
-      final source = await showDialog<ImageSource>(
-        context: context,
-        builder: (context) => SimpleDialog(
-          title: const Text('プロフィール写真を選択'),
-          children: [
-            SimpleDialogOption(
-              onPressed: () => Navigator.pop(context, ImageSource.camera),
-              child: const Text('カメラで撮影'),
+      // 月内リクエスト数をチェック
+      final userId = supabase.auth.currentUser!.id;
+      final allowance =
+          await IllustrationTierManager.checkMonthlyRequestAllowance(userId);
+
+      // すでに月内リクエスト済み → 残り日数表示ダイアログ
+      if (!allowance['allowed'] && allowance['requestCount']! > 0) {
+        final nextAllowedDate =
+            DateTime.parse(allowance['nextAllowedDate'] ?? '');
+        final now = DateTime.now();
+        final daysRemaining = nextAllowedDate.difference(now).inDays + 1;
+
+        if (!mounted) return;
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('📷 まだ変更できません'),
+            content: Text(
+              '前回の撮影からまだ日が浅いため、\n'
+              'まだ変更することができません。\n\n'
+              'あと$daysRemaining日でご利用いただけます。',
             ),
-            SimpleDialogOption(
-              onPressed: () => Navigator.pop(context, ImageSource.gallery),
-              child: const Text('ギャラリーから選択'),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey,
+                ),
+                child: const Text('了解'),
+              ),
+            ],
+          ),
+        );
+        return; // 撮影を中止
+      }
+
+      // 許可されている場合、確認ダイアログを表示
+      if (!mounted) return;
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('📷 証明写真の撮影方法'),
+          content: const Text(
+            '証明写真を撮るような感じで撮影してください！\n\n'
+            '📌 撮影のコツ：\n'
+            '• 正面を向いて撮影\n'
+            '• 顔全体が映るように\n'
+            '• 照明が均一に当たるように\n'
+            '• ピントが顔に合うように\n\n'
+            '⚠️ 一か月に一回しか変更することができません！\n\n'
+            'うまく反映されない場合があります。\n'
+            '慎重に行ってください！',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('キャンセル'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+              ),
+              child: const Text('撮影開始'),
             ),
           ],
         ),
       );
-      if (source == null) return;
 
+      if (proceed != true) return; // キャンセル選択
+
+      // 📷 カメラで撮影（ギャラリー選択は削除）
       final XFile? image = await _picker.pickImage(
-        source: source,
+        source: ImageSource.camera,
         maxWidth: 512,
         maxHeight: 512,
         imageQuality: 85,
       );
       if (image == null) return;
 
+      // ========== ローディングダイアログを表示 ==========
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false, // クリック不可
+        builder: (context) => WillPopScope(
+          onWillPop: () async => false, // バックボタン無効
+          child: AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 20),
+                const Text('📸 アイコン変更中...'),
+                const SizedBox(height: 8),
+                const Text(
+                  'AI がイラストを生成しています。\n少々お待ちください。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
       // ========== Supabase Storage にアップロード ==========
-      final userId = supabase.auth.currentUser!.id;
       final fileName =
           'avatars/$userId/profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
       await supabase.storage.from('avatars').upload(
@@ -512,70 +634,323 @@ class _ProfileScreenState extends State<ProfileScreen>
           );
       // アップロードした画像の公開URLを取得
       final publicUrl = supabase.storage.from('avatars').getPublicUrl(fileName);
-      // ========== Gemini APIでイラスト化 ==========
+      // ========== 月1回制限の記録を保存（重要！） ==========
+      // illustration_requests テーブルに撮影記録を INSERT
+      // これにより checkMonthlyRequestAllowance() が正しく月内カウントを行う
       try {
-        final imageBytes = await File(image.path).readAsBytes();
-        final gemini = GeminiHelper();
-        final prompt = '証明写真風の自撮り画像を、アイコン用の優しいイラストに変換してください。';
-        final illustrationText = await gemini.generateFromImageAndText(
-          imageBytes: imageBytes,
-          prompt: prompt,
+        await supabase.from('illustration_requests').insert({
+          'user_id': userId,
+          'original_photo_url': publicUrl,
+          'tier': 1,
+          'prompt': 'Monthly photo capture record',
+          'status': 'completed',
+          'result_image_url': publicUrl,
+        });
+        print('✅ 撮影記録を保存しました (月内カウント用)');
+      } catch (e) {
+        print('⚠️ 撮影記録の保存に失敗: $e');
+        // 記録失敗してもユーザー体験は続ける
+      }
+
+      // ========== Stability AIでイラスト化 ==========
+      try {
+        print('🎨 [Profile Screen] Stability AI イラスト化処理開始');
+
+        // ユーザーの現在の業スコアティアを取得
+        final currentKarma = _userData?['karma'] ?? 50;
+        final currentTier = IllustrationTierManager.getKarmaTier(currentKarma);
+        print('📊 業スコア: $currentKarma → Tier: $currentTier');
+
+        // Stability AI APIキーを取得
+        final apiKey = dotenv.env['STABILITY_API_KEY'] ?? '';
+        if (apiKey.isEmpty) {
+          throw Exception('STABILITY_API_KEY is not set in .env');
+        }
+        print('🔑 Stability AI API キー確認: ✅');
+
+        // Stability AI で画像生成
+        print('🤖 Stability AI で画像生成中...');
+        final stabilityService = StabilityAIService(apiKey: apiKey);
+        final base64Image = await stabilityService.generateIllustration(
+          tier: currentTier,
+          originalImageUrl: publicUrl,
         );
-        // Gemini APIレスポンスがbase64画像の場合
-        if (illustrationText.startsWith('data:image')) {
-          final base64Data = illustrationText.split(',').last;
-          final illustrationBytes =
-              Uint8List.fromList(base64Decode(base64Data));
-          // 劣化処理（グレースケール化例）
-          final degradedBytes = _degradeImage(illustrationBytes);
-          // 劣化画像を保存
-          final degradedFileName =
-              'avatars/$userId/degraded_${DateTime.now().millisecondsSinceEpoch}.jpg';
-          final degradedFile = File('${image.path}_degraded.jpg');
-          await degradedFile.writeAsBytes(degradedBytes);
-          await supabase.storage.from('avatars').upload(
-                degradedFileName,
-                degradedFile,
+
+        if (base64Image != null && base64Image.isNotEmpty) {
+          print('✅ Base64 画像取得成功');
+
+          // Base64 画像をバイナリに変換
+          final imageBytes = base64Decode(base64Image);
+          print('🔄 バイナリ変換完了 (サイズ: ${imageBytes.length} bytes)');
+
+          // Supabase Storage にティア画像をアップロード
+          final tierFileName =
+              'avatars/$userId/tier${currentTier}_${DateTime.now().millisecondsSinceEpoch}.png';
+          print('📤 Storage にアップロード中: $tierFileName');
+
+          await supabase.storage.from('avatars').uploadBinary(
+                tierFileName,
+                imageBytes,
               );
-          final degradedUrl =
-              supabase.storage.from('avatars').getPublicUrl(degradedFileName);
-          // usersテーブルにdegraded_photo_urlを保存
+          print('✅ Storage アップロード完了');
+
+          // アップロードした画像の公開URL
+          final tierImageUrl =
+              supabase.storage.from('avatars').getPublicUrl(tierFileName);
+          print('🔗 公開 URL: $tierImageUrl');
+
+          // users テーブルのティア画像カラムを更新
+          final tierColumn = 'profile_illustration_tier$currentTier';
+          print('💾 DB 更新中: $tierColumn');
+
           await supabase.from('users').update({
-            'photo_url': publicUrl,
-            'degraded_photo_url': degradedUrl,
-            'is_degraded': true,
-            'updated_at': DateTime.now().toUtc().toIso8601String(),
+            tierColumn: tierImageUrl,
           }).eq('user_id', userId);
+
+          print('✅ DB 更新完了');
+          print('🎉 Tier$currentTier イラスト生成・保存完了');
         } else {
-          // イラスト画像生成失敗時は通常画像のみ保存
-          await supabase.from('users').update({
-            'photo_url': publicUrl,
-            'updated_at': DateTime.now().toUtc().toIso8601String(),
-          }).eq('user_id', userId);
+          print('⚠️ Base64 画像が空です');
         }
       } catch (e) {
-        // Gemini API失敗時は通常画像のみ保存
-        await supabase.from('users').update({
-          'photo_url': publicUrl,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        }).eq('user_id', userId);
+        // Stability AI 失敗時は通常画像のみで続ける
+        print('⚠️ Stability AI エラー: $e');
+        print('🔍 エラー詳細: ${e.toString()}');
       }
 
       // データを再読み込み
       await _loadUserData();
 
+      // UI反映の遅延を待つ
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // ローディングダイアログを閉じる
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('プロフィール写真を更新しました'),
-            backgroundColor: Colors.green,
+        Navigator.pop(context);
+      }
+
+      // 画面をリビルド
+      if (mounted) {
+        setState(() {});
+
+        // 完了ダイアログを表示
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('✅ アイコン変更完了！'),
+            content: const Text(
+              'プロフィール写真とアイコンを\n'
+              'アップロードしました。',
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                ),
+                child: const Text('完了'),
+              ),
+            ],
           ),
         );
       }
     } catch (e) {
       if (mounted) {
+        // ローディングダイアログが表示されていれば閉じる
+        try {
+          Navigator.pop(context);
+        } catch (_) {}
+
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('エラー: $e')),
+          SnackBar(content: Text('❌ エラー: $e')),
+        );
+      }
+    }
+  }
+
+  /// 🛠️ デバッグ用：プロフィール写真をアップロード（月1回制限なし、ギャラリー選択可能）
+  Future<void> _uploadProfilePhotoDebug() async {
+    try {
+      final userId = supabase.auth.currentUser!.id;
+
+      // ========== カメラ/ギャラリー選択ダイアログ ==========
+      final source = await showDialog<ImageSource>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('🛠️ デバッグ: 画像を選択'),
+          children: [
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, ImageSource.camera),
+              child: const Text('📷 カメラで撮影'),
+            ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, ImageSource.gallery),
+              child: const Text('🖼️ ギャラリーから選択'),
+            ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('キャンセル'),
+            ),
+          ],
+        ),
+      );
+      if (source == null) return;
+
+      // 📷 画像を取得
+      final XFile? image = await _picker.pickImage(
+        source: source,
+        maxWidth: 512,
+        maxHeight: 512,
+        imageQuality: 85,
+      );
+      if (image == null) return;
+
+      // ========== ローディングダイアログを表示 ==========
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false, // クリック不可
+        builder: (context) => WillPopScope(
+          onWillPop: () async => false, // バックボタン無効
+          child: AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 20),
+                const Text('🛠️ アイコン変更中（デバッグ）...'),
+                const SizedBox(height: 8),
+                const Text(
+                  'AI がイラストを生成しています。\n少々お待ちください。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // ========== Supabase Storage にアップロード ==========
+      final fileName =
+          'avatars/$userId/profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      await supabase.storage.from('avatars').upload(
+            fileName,
+            File(image.path),
+          );
+      // アップロードした画像の公開URLを取得
+      final publicUrl = supabase.storage.from('avatars').getPublicUrl(fileName);
+
+      // ========== 月1回制限の記録を保存（デバッグモードなので毎回可） ==========
+      try {
+        await supabase.from('illustration_requests').insert({
+          'user_id': userId,
+          'original_photo_url': publicUrl,
+          'tier': 1,
+          'prompt': 'Debug photo capture record',
+          'status': 'completed',
+          'result_image_url': publicUrl,
+        });
+        print('✅ デバッグ: 撮影記録を保存しました');
+      } catch (e) {
+        print('⚠️ デバッグ: 撮影記録の保存に失敗: $e');
+      }
+
+      // ========== Stability AIでイラスト化 ==========
+      try {
+        // ユーザーの現在の業スコアティアを取得
+        final currentKarma = _userData?['karma'] ?? 50;
+        final currentTier = IllustrationTierManager.getKarmaTier(currentKarma);
+
+        // Stability AI APIキーを取得
+        final apiKey = dotenv.env['STABILITY_API_KEY'] ?? '';
+        if (apiKey.isEmpty) {
+          throw Exception('STABILITY_API_KEY is not set in .env');
+        }
+
+        // Stability AI で画像生成
+        final stabilityService = StabilityAIService(apiKey: apiKey);
+        final base64Image = await stabilityService.generateIllustration(
+          tier: currentTier,
+          originalImageUrl: publicUrl,
+        );
+
+        if (base64Image != null && base64Image.isNotEmpty) {
+          // Base64 画像をバイナリに変換
+          final imageBytes = base64Decode(base64Image);
+
+          // Supabase Storage にティア画像をアップロード
+          final tierFileName =
+              'avatars/$userId/tier${currentTier}_${DateTime.now().millisecondsSinceEpoch}.png';
+          await supabase.storage.from('avatars').uploadBinary(
+                tierFileName,
+                imageBytes,
+              );
+
+          // アップロードした画像の公開URL
+          final tierImageUrl =
+              supabase.storage.from('avatars').getPublicUrl(tierFileName);
+
+          // users テーブルのティア画像カラムを更新
+          final tierColumn = 'profile_illustration_tier$currentTier';
+          await supabase.from('users').update({
+            tierColumn: tierImageUrl,
+          }).eq('user_id', userId);
+
+          print('✅ デバッグ: Tier$currentTier イラスト生成・保存完了');
+        } else {
+          print('⚠️ デバッグ: Stability AI 画像生成失敗');
+        }
+      } catch (e) {
+        print('⚠️ デバッグ: Stability AI エラー: $e');
+      }
+
+      // データを再読み込み
+      await _loadUserData();
+
+      // UI反映の遅延を待つ
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // ローディングダイアログを閉じる
+      if (mounted) {
+        Navigator.pop(context);
+      }
+
+      // 画面をリビルド
+      if (mounted) {
+        setState(() {});
+
+        // 完了ダイアログを表示
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('✅ アイコン変更完了！'),
+            content: const Text(
+              '🛠️ デバッグモード\n\n'
+              'プロフィール写真とアイコンを\n'
+              'アップロードしました。',
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange,
+                ),
+                child: const Text('完了'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        // ローディングダイアログが表示されていれば閉じる
+        try {
+          Navigator.pop(context);
+        } catch (_) {}
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('🛠️ ❌ デバッグエラー: $e')),
         );
       }
     }
@@ -760,7 +1135,21 @@ class _ProfileScreenState extends State<ProfileScreen>
                     ? null
                     : () async {
                         Navigator.pop(context);
-                        await _uploadProfilePhoto();
+
+                        // デバッグモードで ギャラリー選択を許可
+                        final prefs = await SharedPreferences.getInstance();
+                        final isDebugMode =
+                            prefs.getBool('debug_upload_photo_mode') ?? false;
+
+                        if (isDebugMode) {
+                          // デバッグモード：ギャラリー選択可能
+                          await _uploadProfilePhotoDebug();
+                          // フラグをリセット
+                          await prefs.setBool('debug_upload_photo_mode', false);
+                        } else {
+                          // 通常モード：カメラのみ、月1回制限チェック
+                          await _uploadProfilePhoto();
+                        }
                       },
               ),
               TextButton(
@@ -1803,18 +2192,29 @@ class _ProfileScreenState extends State<ProfileScreen>
                               itemCount: currentFriends.length,
                               itemBuilder: (context, index) {
                                 final friend = currentFriends[index];
+                                final friendPhotoUrl =
+                                    friend['profile_illustration_url'] ??
+                                        friend['photo_url'];
+                                final friendKarma = friend['karma'] ?? 50;
+                                final friendBuddhaUrl =
+                                    friend['profile_buddha_illustration_url'];
+
                                 return ListTile(
-                                  leading: CircleAvatar(
-                                    backgroundImage: friend['photo_url'] != null
-                                        ? NetworkImage(friend['photo_url'])
-                                        : null,
-                                    child: friend['photo_url'] == null
-                                        ? Text(
+                                  leading: (friendPhotoUrl != null &&
+                                          friendPhotoUrl != '')
+                                      ? DegradedIconDisplay(
+                                          imageUrl: friendPhotoUrl,
+                                          buddhaImageUrl: friendBuddhaUrl,
+                                          karma: friendKarma,
+                                          size: 40,
+                                          shape: BoxShape.circle,
+                                        )
+                                      : CircleAvatar(
+                                          child: Text(
                                             (friend['display_name'] ?? 'U')[0]
                                                 .toUpperCase(),
-                                          )
-                                        : null,
-                                  ),
+                                          ),
+                                        ),
                                   title: Text(friend['display_name'] ?? 'ユーザー'),
                                   trailing: PopupMenuButton<String>(
                                     onSelected: (String value) async {
@@ -1986,21 +2386,31 @@ class _ProfileScreenState extends State<ProfileScreen>
                                 final request = pendingRequests[index];
                                 final requester = request['requester']
                                     as Map<String, dynamic>?;
+                                final requesterPhotoUrl =
+                                    requester?['profile_illustration_url'] ??
+                                        requester?['photo_url'];
+                                final requesterKarma =
+                                    requester?['karma'] ?? 50;
+                                final requesterBuddhaUrl = requester?[
+                                    'profile_buddha_illustration_url'];
 
                                 return ListTile(
-                                  leading: CircleAvatar(
-                                    backgroundImage: requester?['photo_url'] !=
-                                            null
-                                        ? NetworkImage(requester!['photo_url'])
-                                        : null,
-                                    child: requester?['photo_url'] == null
-                                        ? Text(
+                                  leading: (requesterPhotoUrl != null &&
+                                          requesterPhotoUrl != '')
+                                      ? DegradedIconDisplay(
+                                          imageUrl: requesterPhotoUrl,
+                                          buddhaImageUrl: requesterBuddhaUrl,
+                                          karma: requesterKarma,
+                                          size: 40,
+                                          shape: BoxShape.circle,
+                                        )
+                                      : CircleAvatar(
+                                          child: Text(
                                             (requester?['display_name'] ??
                                                     'U')[0]
                                                 .toUpperCase(),
-                                          )
-                                        : null,
-                                  ),
+                                          ),
+                                        ),
                                   title: Text(
                                       requester?['display_name'] ?? 'ユーザー'),
                                   trailing: SizedBox(
@@ -2187,17 +2597,24 @@ class _ProfileScreenState extends State<ProfileScreen>
               final request = _mercyRequests[index];
               final requester = request['requester'] as Map<String, dynamic>?;
               final requesterName = requester?['display_name'] ?? 'ユーザー';
-              final requesterPhoto = requester?['photo_url'] as String?;
+              final requesterPhoto = requester?['profile_illustration_url'] ??
+                  requester?['photo_url'] as String?;
+              final requesterKarma = requester?['karma'] ?? 50;
+              final requesterBuddhaUrl =
+                  requester?['profile_buddha_illustration_url'];
 
               return ListTile(
-                leading: CircleAvatar(
-                  backgroundImage:
-                      requesterPhoto != null && requesterPhoto.isNotEmpty
-                          ? NetworkImage(requesterPhoto)
-                          : null,
-                  child:
-                      requesterPhoto == null ? const Icon(Icons.person) : null,
-                ),
+                leading: (requesterPhoto != null && requesterPhoto.isNotEmpty)
+                    ? DegradedIconDisplay(
+                        imageUrl: requesterPhoto,
+                        buddhaImageUrl: requesterBuddhaUrl,
+                        karma: requesterKarma,
+                        size: 40,
+                        shape: BoxShape.circle,
+                      )
+                    : CircleAvatar(
+                        child: const Icon(Icons.person),
+                      ),
                 title: Text(requesterName),
                 subtitle: const Text('慈悲を求めています'),
                 trailing: Row(
@@ -2249,7 +2666,13 @@ class _ProfileScreenState extends State<ProfileScreen>
     final isDegraded = _userData?['is_degraded'] ?? false;
     final photoUrl = isDegraded
         ? (_userData?['degraded_photo_url'] ?? _userData?['photo_url'])
-        : _userData?['photo_url'];
+        : (_userData?['profile_illustration_url'] ?? _userData?['photo_url']);
+
+    // 業スコア取得（業連動アイコンシステム用）
+    final karma = _userData?['karma'] ?? 50;
+
+    // 仏イラストURL取得（業100達成時用）
+    final buddhaImageUrl = _userData?['profile_buddha_illustration_url'];
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -2367,17 +2790,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                                   }
                                 });
                               },
-                              onLongPress: _uploadProfilePhoto,
-                              child: CircleAvatar(
-                                radius: 40,
-                                backgroundImage:
-                                    photoUrl != null && photoUrl != ''
-                                        ? NetworkImage(photoUrl)
-                                        : null,
-                                child: photoUrl == null || photoUrl == ''
-                                    ? const Icon(Icons.person, size: 40)
-                                    : null,
-                              ),
+                              child: _buildTierImageDisplay(),
                             ),
                             // 装備中のバッジを右上に表示
                             if (_equippedBadge != null)
@@ -2466,6 +2879,9 @@ class _ProfileScreenState extends State<ProfileScreen>
                         ),
                       ),
                     if (_mercyRequests.isNotEmpty) const SizedBox(height: 12),
+                    // 🎨 業テイア＆イラスト生成セクション
+                    _buildIllustrationSection(),
+                    const SizedBox(height: 12),
                     // ユーザー名
                     Text(
                       _userData?['display_name'] ?? 'ユーザー',
@@ -2614,6 +3030,257 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
+  // 投稿詳細を表示（カロリーと健康度スコア）
+  void _showMealDetail(Map<String, dynamic> meal) {
+    final imageUrl = meal['photo_url'] as String?;
+    final calories = meal['calories'] as int? ?? 0;
+    final healthScore = meal['health_score'] as int? ?? 0;
+    final description = meal['notes'] as String? ?? '';
+    final createdAt = meal['created_at'] as String?;
+    final date = createdAt != null
+        ? DateTime.parse(createdAt).toLocal().toString().substring(0, 10)
+        : '';
+
+    // カロリー判定（600を超えたら赤）
+    final calorieColor = calories > 600 ? Colors.red : Colors.green;
+
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 食事の画像
+              if (imageUrl != null && imageUrl.isNotEmpty)
+                ClipRRect(
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(12),
+                    topRight: Radius.circular(12),
+                  ),
+                  child: Image.network(
+                    imageUrl,
+                    height: 250,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 日付
+                    if (date.isNotEmpty)
+                      Text(
+                        date,
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 14,
+                        ),
+                      ),
+                    const SizedBox(height: 12),
+
+                    // カロリー（大きく表示）
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: calorieColor.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: calorieColor, width: 2),
+                      ),
+                      child: Column(
+                        children: [
+                          const Text(
+                            'カロリー',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '$calories',
+                            style: TextStyle(
+                              fontSize: 48,
+                              fontWeight: FontWeight.bold,
+                              color: calorieColor,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'kcal',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: calorieColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // 健康度スコア
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            '健康度スコア',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            '$healthScore',
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // 説明
+                    if (description.isNotEmpty) ...[
+                      const Text(
+                        '説明',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        description,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+
+                    // ボタン群
+                    Row(
+                      children: [
+                        // 削除ボタン
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              Navigator.pop(context);
+                              await _deleteMeal(meal);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            child: const Text(
+                              '削除',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        // 閉じるボタン
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () => Navigator.pop(context),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            child: const Text(
+                              '閉じる',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 投稿を削除する
+  Future<void> _deleteMeal(Map<String, dynamic> meal) async {
+    final mealId = meal['id'] as String?;
+    if (mealId == null) return;
+
+    // 確認ダイアログ
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('投稿を削除'),
+        content: const Text('この投稿を削除してもよろしいですか？\n削除後は復元できません。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('キャンセル'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+            ),
+            child: const Text(
+              '削除',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await supabase.from('meals').delete().eq('id', mealId);
+
+      // 画面をリロード
+      await _loadUserData();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ 投稿を削除しました'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ 削除失敗: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   // 投稿グリッドウィジェット
   Widget _buildMealsGrid() {
     if (_myMeals.isEmpty) {
@@ -2633,7 +3300,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
 
     return GridView.builder(
-      padding: EdgeInsets.zero,
+      padding: const EdgeInsets.only(bottom: 80), // ボトムナビゲーション分の余白
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 3,
         crossAxisSpacing: 2,
@@ -2646,7 +3313,8 @@ class _ProfileScreenState extends State<ProfileScreen>
 
         return GestureDetector(
           onTap: () {
-            // 投稿詳細を表示（オプション）
+            // 投稿詳細を表示（カロリーと健康度スコア）
+            _showMealDetail(meal);
           },
           child: imageUrl != null && imageUrl.isNotEmpty
               ? Image.network(
@@ -2681,25 +3349,34 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
 
     return ListView.builder(
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.only(
+          left: 8, right: 8, top: 8, bottom: 80), // ボトムナビゲーション分の余白
       itemCount: _mercyRequests.length,
       itemBuilder: (context, index) {
         final request = _mercyRequests[index];
         final requester = request['requester'] as Map<String, dynamic>?;
         final requesterName = requester?['display_name'] ?? 'ユーザー';
-        final requesterPhoto = requester?['photo_url'] as String?;
+        final requesterPhoto = requester?['profile_illustration_url'] ??
+            requester?['photo_url'] as String?;
+        final requesterKarma = requester?['karma'] ?? 50;
+        final requesterBuddhaUrl =
+            requester?['profile_buddha_illustration_url'];
         final requesterCustomId = requester?['custom_user_id'] as String?;
 
         return Card(
           margin: const EdgeInsets.only(bottom: 8),
           child: ListTile(
-            leading: CircleAvatar(
-              backgroundImage:
-                  requesterPhoto != null && requesterPhoto.isNotEmpty
-                      ? NetworkImage(requesterPhoto)
-                      : null,
-              child: requesterPhoto == null ? const Icon(Icons.person) : null,
-            ),
+            leading: (requesterPhoto != null && requesterPhoto.isNotEmpty)
+                ? DegradedIconDisplay(
+                    imageUrl: requesterPhoto,
+                    buddhaImageUrl: requesterBuddhaUrl,
+                    karma: requesterKarma,
+                    size: 40,
+                    shape: BoxShape.circle,
+                  )
+                : CircleAvatar(
+                    child: const Icon(Icons.person),
+                  ),
             title: Text(
               requesterName,
               style: const TextStyle(fontWeight: FontWeight.bold),
@@ -2731,6 +3408,359 @@ class _ProfileScreenState extends State<ProfileScreen>
         );
       },
     );
+  }
+
+  // 🎨 業テイア＆イラスト生成セクション
+  Widget _buildIllustrationSection() {
+    final karma = (_userData?['karma'] ?? 50) as int;
+    final currentTierImage = _tierImageUrls[_currentKarmaTier];
+    final profilePhoto = _userData?['photo_url'] as String?;
+
+    // プロフィール写真がない場合はセクション非表示
+    if (profilePhoto == null || profilePhoto.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    // テイア情報テキスト
+    String tierName = '';
+    String tierDescription = '';
+    switch (_currentKarmaTier) {
+      case 1:
+        tierName = '悪業(1)';
+        tierDescription = 'ハゲ散らかし・ニキビだらけ・デブで太った体';
+        break;
+      case 2:
+        tierName = '不健康(2)';
+        tierDescription = '薄毛気味・ニキビ跡・デブ気味';
+        break;
+      case 3:
+        tierName = '通常(3)';
+        tierDescription = '穏やかな顔・健康的な肌';
+        break;
+      case 4:
+        tierName = '美化(4)';
+        tierDescription = 'つやのある肌・綺麗な髪・輝き';
+        break;
+      case 5:
+        tierName = '究極(5)';
+        tierDescription = '光輝く仏';
+        break;
+    }
+
+    // 次のティアまでの業スコア計算
+    int nextTierThreshold = _currentKarmaTier * 20;
+    int karmaToNextTier = nextTierThreshold - karma;
+    if (karmaToNextTier < 0)
+      karmaToNextTier = 20 - (karma - (_currentKarmaTier * 20 - 20));
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.purple.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: Colors.purple.withOpacity(0.2),
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // テイア情報
+          Row(
+            children: [
+              const Icon(Icons.trending_up, color: Colors.purple, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'イラスト: $tierName',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.purple,
+                      ),
+                    ),
+                    Text(
+                      tierDescription,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // ステータス表示
+          if (_illustrationRequestStatus == 'pending' &&
+              currentTierImage == null)
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'イラスト生成中...（明朝に完成予定）',
+                      style: TextStyle(fontSize: 10, color: Colors.orange),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (_illustrationRequestStatus == 'completed' &&
+              currentTierImage != null)
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle, size: 12, color: Colors.green),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'イラストが完成しました！',
+                      style: TextStyle(fontSize: 10, color: Colors.green),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (_illustrationRequestStatus == 'idle' && profilePhoto != null)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '業スコア: $karma/100',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    ),
+                    Text(
+                      '次: あと$karmaToNextTier',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isRequestingIllustration
+                        ? null
+                        : () => _requestIllustrationGeneration(),
+                    icon: _isRequestingIllustration
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.image, size: 16),
+                    label: Text(
+                      _isRequestingIllustration ? '送信中...' : 'イラスト生成をリクエスト',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.purple,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  // 🎨 イラスト生成をリクエスト
+  Future<void> _requestIllustrationGeneration() async {
+    try {
+      final userId = supabase.auth.currentUser?.id;
+      if (userId == null) return;
+
+      final profilePhotoUrl = _userData?['photo_url'] as String?;
+      if (profilePhotoUrl == null || profilePhotoUrl.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('プロフィール写真が必要です')),
+        );
+        return;
+      }
+
+      // 🎨 月内のイラスト生成リクエスト数をチェック（月1回制限）
+      final allowance =
+          await IllustrationTierManager.checkMonthlyRequestAllowance(userId);
+
+      if (!allowance['allowed'] && allowance['requestCount']! > 0) {
+        // すでに月内リクエスト済み → エラーダイアログ
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⏳ アイコンのイラスト変更は月1回限りです。\nお待ちください。'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+
+      setState(() {
+        _isRequestingIllustration = true;
+      });
+
+      // すべてのテイアのイラスト生成をリクエスト
+      final karma = (_userData?['karma'] ?? 50) as int;
+      await IllustrationTierManager.checkAndRequestGeneration(
+        userId: userId,
+        oldKarma: karma,
+        newKarma: karma,
+        originalPhotoUrl: profilePhotoUrl,
+      );
+
+      if (mounted) {
+        setState(() {
+          _illustrationRequestStatus = 'pending';
+          _isRequestingIllustration = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✨ イラスト生成をリクエストしました。\n明朝に完成予定です。'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      print('❌ イラスト生成リクエストエラー: $e');
+      if (mounted) {
+        setState(() {
+          _isRequestingIllustration = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('エラー: $e')),
+        );
+      }
+    }
+  }
+
+  // バッジの縁の色を取得
+  Widget _buildTierImageDisplay() {
+    // 現在のテイアに対応する画像URLを取得
+    final currentTierImageUrl = _tierImageUrls[_currentKarmaTier];
+    final photoUrl = _userData?['photo_url'] as String?;
+
+    // テイア画像があればそれを表示、ない場合は元の写真を表示
+    if (currentTierImageUrl != null && currentTierImageUrl.isNotEmpty) {
+      return Container(
+        width: 80,
+        height: 80,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: _getTierBorderColor(_currentKarmaTier),
+            width: 3,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: _getTierBorderColor(_currentKarmaTier).withOpacity(0.5),
+              blurRadius: 8,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        child: Image.network(
+          currentTierImageUrl,
+          fit: BoxFit.cover,
+        ),
+      );
+    } else if (photoUrl != null && photoUrl.isNotEmpty) {
+      // テイア画像待機中 → オリジナル写真表示
+      return Container(
+        width: 80,
+        height: 80,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: Colors.orange,
+            width: 2,
+          ),
+          image: DecorationImage(
+            image: NetworkImage(photoUrl),
+            fit: BoxFit.cover,
+          ),
+        ),
+        child: _illustrationRequestStatus == 'pending'
+            ? const Opacity(
+                opacity: 0.7,
+                child: Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(20),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  ),
+                ),
+              )
+            : null,
+      );
+    } else {
+      // プロフィール写真なし
+      return Container(
+        width: 80,
+        height: 80,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.grey[300],
+          border: Border.all(
+            color: Colors.grey[400]!,
+            width: 2,
+          ),
+        ),
+        child: const Icon(Icons.person, size: 40),
+      );
+    }
+  }
+
+  // 🎨 業テイアごとの縁の色を取得
+  Color _getTierBorderColor(int tier) {
+    switch (tier) {
+      case 1:
+        return Colors.red.shade700; // 悪業
+      case 2:
+        return Colors.orange;
+      case 3:
+        return Colors.grey; // 通常
+      case 4:
+        return Colors.blue;
+      case 5:
+        return Colors.amber; // 究極
+      default:
+        return Colors.grey;
+    }
   }
 
   // バッジの縁の色を取得

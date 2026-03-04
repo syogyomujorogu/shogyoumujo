@@ -526,6 +526,68 @@ class _MealPostSheetState extends State<MealPostSheet> {
     }
   }
 
+  // ========== カロリー減少アイテムを取得 ==========
+  Future<List<Map<String, dynamic>>> _getDecreaseItems() async {
+    try {
+      final userId = supabase.auth.currentUser!.id;
+      final items = await supabase
+          .from('user_items')
+          .select('*, items(*)')
+          .eq('user_id', userId)
+          .gt('quantity', 0);
+
+      final decreaseItems = (items as List)
+          .where((item) => item['items']['effect_type'] == 'calorie_decrease')
+          .toList();
+
+      return decreaseItems.cast<Map<String, dynamic>>();
+    } catch (e) {
+      print('❌ カロリー減少アイテム取得エラー: $e');
+      return [];
+    }
+  }
+
+  // ========== 食事投稿前にアイテムを使用するか確認 ==========
+  Future<Map<String, dynamic>?> _showItemSelectionDialog(
+      List<Map<String, dynamic>> items) async {
+    if (items.isEmpty) {
+      return null; // アイテムなし
+    }
+
+    return showDialog<Map<String, dynamic>?>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('🎁 カロリー減少アイテムを使用しますか？'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: items.length + 1,
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return ListTile(
+                  title: const Text('アイテムを使用しない'),
+                  onTap: () => Navigator.pop(context, null),
+                );
+              }
+              final item = items[index - 1];
+              final itemData = item['items'] as Map<String, dynamic>;
+              final quantity = item['quantity'] as int? ?? 1;
+              final effectValue = itemData['effect_value'] as int? ?? 0;
+
+              return ListTile(
+                title: Text('${itemData['name']} (x$quantity)'),
+                subtitle:
+                    Text('カロリーを${effectValue}%減少 • ${itemData['description']}'),
+                onTap: () => Navigator.pop(context, item),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
   // 食事投稿をSupabaseに保存
   Future<void> _postMeal() async {
     // バリデーション: 画像
@@ -563,6 +625,21 @@ class _MealPostSheetState extends State<MealPostSheet> {
       );
       return;
     }
+
+    // ========== アイテム選択ダイアログを表示 ==========
+    final decreaseItems = await _getDecreaseItems();
+    Map<String, dynamic>? selectedItem;
+    if (decreaseItems.isNotEmpty) {
+      selectedItem = await _showItemSelectionDialog(decreaseItems);
+    }
+
+    int finalCalories = _estimatedCalories!;
+    if (selectedItem != null) {
+      final itemData = selectedItem['items'] as Map<String, dynamic>;
+      final effectValue = itemData['effect_value'] as int? ?? 0;
+      finalCalories = (_estimatedCalories! * (100 - effectValue) / 100).round();
+    }
+
     setState(() => _isPosting = true);
     while (true) {
       try {
@@ -584,7 +661,7 @@ class _MealPostSheetState extends State<MealPostSheet> {
           'meal_type': _convertMealTypeToEnglish(
             _selectedMealType,
           ), // 英語に変換して保存
-          'calories': _estimatedCalories, // AI推定カロリーを保存
+          'calories': finalCalories, // アイテム使用後のカロリー
           'health_score': _healthScore, // 健康度スコア（0-100）
           'health_rating': _healthRating, // 健康度評価
           'latitude': _latitude, // 位置情報（緯度）
@@ -592,6 +669,19 @@ class _MealPostSheetState extends State<MealPostSheet> {
           'location_name': _locationName, // 位置情報（テキスト）
           'created_at': now.toUtc().toIso8601String(),
         });
+
+        // ========== アイテムを消費 ==========
+        if (selectedItem != null) {
+          final userItemId = selectedItem['id'];
+          final quantity = selectedItem['quantity'] as int? ?? 1;
+          if (quantity > 1) {
+            await supabase
+                .from('user_items')
+                .update({'quantity': quantity - 1}).eq('id', userItemId);
+          } else {
+            await supabase.from('user_items').delete().eq('id', userItemId);
+          }
+        }
 
         // 実績自動達成判定ロジック
         await _checkAndUnlockAchievements(userId);
@@ -703,7 +793,26 @@ class _MealPostSheetState extends State<MealPostSheet> {
                 break;
               }
             }
-            if (streak >= conditionValue) unlocked = true;
+            if (streak >= conditionValue) {
+              unlocked = true;
+              // ★連続投稿ボーナス達成時にガチャチケット1枚付与★
+              final ticketRow = await supabase
+                  .from('gacha_tickets')
+                  .select('ticket_count')
+                  .eq('user_id', userId)
+                  .maybeSingle();
+              final currentTickets = (ticketRow?['ticket_count'] ?? 0) as int;
+              if (ticketRow != null) {
+                await supabase.from('gacha_tickets').update({
+                  'ticket_count': currentTickets + 1,
+                }).eq('user_id', userId);
+              } else {
+                await supabase.from('gacha_tickets').insert({
+                  'user_id': userId,
+                  'ticket_count': 1,
+                });
+              }
+            }
           }
         }
         // 他の条件タイプもここに追加可能
@@ -724,22 +833,23 @@ class _MealPostSheetState extends State<MealPostSheet> {
   Future<int> _updateUserKarma(String userId, int healthScore) async {
     try {
       // 健康度スコアから業の変動を計算
-      // 90-100: -10 (大幅改善)
-      // 70-89:  -5  (改善)
+      // 50がデフォルト、健康で上昇、不健康で下降。上限100。維持は難しく、100維持は大変！
+      // 90-100: +10 (健康で業アップ)
+      // 70-89:  +5  (良好で業アップ)
       // 50-69:   0  (変化なし)
-      // 30-49:  +5  (悪化)
-      // 0-29:  +10 (大幅悪化)
+      // 30-49:  -5  (不健康で業ダウン)
+      // 0-29:  -10 (大幅不健康で業ダウン)
       int karmaChange = 0;
       if (healthScore >= 90) {
-        karmaChange = -10; // 健康な食事で業が減る（良い）
+        karmaChange = 10; // 健康な食事で業が上がる
       } else if (healthScore >= 70) {
-        karmaChange = -5;
+        karmaChange = 5;
       } else if (healthScore >= 50) {
         karmaChange = 0;
       } else if (healthScore >= 30) {
-        karmaChange = 5; // 不健康な食事で業が増える（悪い）
+        karmaChange = -5; // 不健康な食事で業が下がる
       } else {
-        karmaChange = 10;
+        karmaChange = -10;
       }
 
       // 現在の業値を取得
@@ -1092,7 +1202,7 @@ class _MealPostSheetState extends State<MealPostSheet> {
                     onPressed: _isAnalyzing ? null : _takePhoto,
                     icon: const Icon(Icons.camera_alt, size: 28),
                     label: const Text(
-                      '📸 カメラで撮影',
+                      'カメラで撮影',
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,

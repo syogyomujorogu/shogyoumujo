@@ -13,6 +13,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'comment_sheet.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'reel_settings_dialog.dart';
+import '../widgets/icon_degrade_filter.dart';
 
 // Supabaseクライアントのグローバルインスタンス
 final supabase = Supabase.instance.client;
@@ -22,11 +23,11 @@ class ReelFeedScreen extends StatefulWidget {
   const ReelFeedScreen({super.key});
 
   @override
-  State<ReelFeedScreen> createState() => _ReelFeedScreenState();
+  State<ReelFeedScreen> createState() => ReelFeedScreenState();
 }
 
 // リールフィード画面の状態管理クラス
-class _ReelFeedScreenState extends State<ReelFeedScreen>
+class ReelFeedScreenState extends State<ReelFeedScreen>
     with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   bool _keepAspectRatio = false;
   late PageController _pageController;
@@ -83,6 +84,10 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
     });
   }
 
+  Future<void> refreshMeals() async {
+    await _loadMeals();
+  }
+
   /// フレンドの食事投稿を読み込む
   Future<void> _loadMeals() async {
     print('========================================');
@@ -116,11 +121,14 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
           .map<String>((row) => row['muted_user_id'] as String)
           .toSet();
 
+      final cutoff = DateTime.now().toUtc().subtract(const Duration(hours: 24));
+
       // フレンドの食事投稿を取得（mealテーブルから）
       final meals = await supabase
           .from('meals')
           .select()
           .inFilter('user_id', friendIds)
+          .gte('created_at', cutoff.toIso8601String())
           .order('created_at', ascending: false);
 
       // ブロック・ミュート除外
@@ -135,10 +143,26 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
       if (filteredMeals.isNotEmpty) {
         final userIds =
             filteredMeals.map((m) => m['user_id'] as String).toSet().toList();
-        final users = await supabase
-            .from('users')
-            .select('user_id, display_name, custom_user_id, photo_url')
-            .inFilter('user_id', userIds);
+        List<dynamic> users;
+        try {
+          users = await supabase
+              .from('users')
+              .select(
+                  'user_id, display_name, custom_user_id, photo_url, profile_illustration_url, karma, profile_buddha_illustration_url')
+              .inFilter('user_id', userIds);
+        } catch (e) {
+          final message = e.toString();
+          if (message.contains('code: 42703') ||
+              message.contains('does not exist')) {
+            users = await supabase
+                .from('users')
+                .select(
+                    'user_id, display_name, custom_user_id, photo_url, karma')
+                .inFilter('user_id', userIds);
+          } else {
+            rethrow;
+          }
+        }
 
         // ユーザー情報をマップに変換
         final userMap = {for (var u in users) u['user_id']: u};
@@ -449,7 +473,11 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
           final user = meal['user'] as Map<String, dynamic>?;
           final userName = user?['display_name'] ?? 'ユーザー';
           final userCustomId = user?['custom_user_id'] ?? '';
-          final userPhotoUrl = user?['photo_url'] as String?;
+          final userPhotoUrl = user?['profile_illustration_url'] ??
+              user?['photo_url'] as String?;
+          final userKarma = user?['karma'] ?? 50;
+          final userBuddhaUrl =
+              user?['profile_buddha_illustration_url'] as String?;
           final mealPhotoUrl = meal['photo_url'] as String?;
           final mealDescription = meal['description'] as String?;
           final calories = meal['calories'] as int? ?? 0;
@@ -460,6 +488,8 @@ class _ReelFeedScreenState extends State<ReelFeedScreen>
             userName: userName,
             userCustomId: userCustomId,
             userPhotoUrl: userPhotoUrl,
+            userKarma: userKarma,
+            userBuddhaUrl: userBuddhaUrl,
             mealPhotoUrl: mealPhotoUrl,
             mealDescription: mealDescription,
             calories: calories,
@@ -487,6 +517,8 @@ class _ReelItem extends StatefulWidget {
   final String userName;
   final String userCustomId;
   final String? userPhotoUrl;
+  final int userKarma;
+  final String? userBuddhaUrl;
   final String? mealPhotoUrl;
   final String? mealDescription;
   final int calories;
@@ -501,6 +533,8 @@ class _ReelItem extends StatefulWidget {
     required this.userName,
     required this.userCustomId,
     this.userPhotoUrl,
+    required this.userKarma,
+    this.userBuddhaUrl,
     this.mealPhotoUrl,
     this.mealDescription,
     required this.calories,
@@ -614,17 +648,19 @@ class _ReelItemState extends State<_ReelItem>
               Row(
                 children: [
                   // ユーザー画像
-                  CircleAvatar(
-                    radius: 24,
-                    backgroundImage: widget.userPhotoUrl != null &&
-                            widget.userPhotoUrl!.isNotEmpty
-                        ? NetworkImage(widget.userPhotoUrl!)
-                        : null,
-                    child: widget.userPhotoUrl == null ||
-                            widget.userPhotoUrl!.isEmpty
-                        ? const Icon(Icons.person)
-                        : null,
-                  ),
+                  (widget.userPhotoUrl != null &&
+                          widget.userPhotoUrl!.isNotEmpty)
+                      ? DegradedIconDisplay(
+                          imageUrl: widget.userPhotoUrl!,
+                          buddhaImageUrl: widget.userBuddhaUrl,
+                          karma: widget.userKarma,
+                          size: 48,
+                          shape: BoxShape.circle,
+                        )
+                      : CircleAvatar(
+                          radius: 24,
+                          child: const Icon(Icons.person),
+                        ),
                   const SizedBox(width: 12),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,

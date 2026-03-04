@@ -297,6 +297,15 @@ class _GachaScreenState extends State<GachaScreen>
     }
   }
 
+  /// アイテムの使用可能場面を表示
+  String _getUsageLocation(String effectType) {
+    if (effectType == 'calorie_decrease') {
+      return '📸 食事投稿時に使用';
+    } else {
+      return '🎯 相手の食事に使用';
+    }
+  }
+
   void _showMessage(String message) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -350,7 +359,7 @@ class _GachaScreenState extends State<GachaScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('🎰 ガチャガチャ'),
+        title: const Text('ガチャ'),
         backgroundColor: Colors.purple,
       ),
       body: _isLoading
@@ -614,24 +623,29 @@ class _GachaScreenState extends State<GachaScreen>
                         children: [
                           Text(item['description']),
                           const SizedBox(height: 4),
-                          ElevatedButton(
-                            onPressed: () => _useItem(
-                              userItem['user_item_id'] ?? userItem['id'],
-                              item['id'],
-                              effectType,
-                              effectValue,
+                          // アイテム使用場面の説明
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
                             ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 8,
+                            decoration: BoxDecoration(
+                              color: effectType == 'calorie_decrease'
+                                  ? Colors.green.withOpacity(0.1)
+                                  : Colors.orange.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              effectType == 'calorie_decrease'
+                                  ? '📸 食事投稿時に使用'
+                                  : '🎯 相手の食事に使用',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: effectType == 'calorie_decrease'
+                                    ? Colors.green.shade700
+                                    : Colors.orange.shade700,
+                                fontWeight: FontWeight.w600,
                               ),
-                            ),
-                            child: const Text(
-                              '使用する',
-                              style:
-                                  TextStyle(color: Colors.white, fontSize: 12),
                             ),
                           ),
                         ],
