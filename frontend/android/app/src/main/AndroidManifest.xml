@@ -15,6 +15,9 @@
                      android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     
+    <!-- 歩数センサー権限（Android 10以降必須） -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    
     <application
         android:label="frontend"
         android:name="${applicationName}"

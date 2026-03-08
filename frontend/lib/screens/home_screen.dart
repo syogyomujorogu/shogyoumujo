@@ -11,7 +11,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'camera_screen.dart';
-import 'steps_screen.dart';
+import 'today_screen.dart';
 import 'mercy_request_screen.dart';
 import 'profile_screen.dart';
 
@@ -95,10 +95,8 @@ class _HomeScreenState extends State<HomeScreen> {
               'email': supabase.auth.currentUser?.email ?? '',
               'photo_url': null,
               'degraded_photo_url': null,
-              'is_degraded': false,
-              'degrade_level': 0,
-              'current_calories': 0,
-              'current_steps': 0,
+              'karma': 50,
+              'mercy_points': 0,
             };
           });
         }
@@ -180,15 +178,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     // ユーザーデータから各値を取得
-    final isDegraded = userData?['is_degraded'] ?? false; // 劣化状態かどうか
-    final degradeLevel = (userData?['degrade_level'] ?? 0) as int; // 劣化レベル
-    final currentCalories = userData?['current_calories'] ?? 0; // 今日のカロリー
-    final currentSteps = userData?['current_steps'] ?? 0; // 今日の歩数
+    final karmaVal = userData?['karma'] ?? 50;
+    final isDegraded = (karmaVal is int ? karmaVal : 50) < 50;
 
-    // 劣化している場合は劣化顔、そうでなければ通常の顔を表示
-    final photoURL = isDegraded
-        ? (userData?['degraded_photo_url'] ?? userData?['photo_url'])
-        : userData?['photo_url'];
+    // 業スコアに応じてアイコンを選択
+    final photoURL =
+        userData?['profile_illustration_url'] ?? userData?['photo_url'];
 
     return Scaffold(
       // アプリバー（画面上部のバー）
@@ -334,18 +329,17 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 12),
 
-              // 歩数記録ボタン
+              // 今日の修業ボタン
               _buildActionButton(
                 context,
-                '歩数を記録',
+                '今日の修業',
                 Icons.directions_walk,
                 Colors.blue,
                 () {
-                  // 歩数記録画面に遷移
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => const StepsScreen(),
+                      builder: (context) => const TodayScreen(),
                     ),
                   );
                 },

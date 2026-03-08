@@ -309,7 +309,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
 
       final userRow = await supabase
           .from('users')
-          .select('karma, photo_url, profile_illustration_tier1')
+          .select('karma, photo_url')
           .eq('user_id', userId)
           .maybeSingle();
 
@@ -317,7 +317,21 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
 
       final karma = (userRow['karma'] ?? 50) as int;
       final profilePhotoUrl = userRow['photo_url'] as String?;
-      final tier1ImageUrl = userRow['profile_illustration_tier1'] as String?;
+
+      // ティア画像があるか別クエリで確認（カラムが存在しない場合に備える）
+      String? tier1ImageUrl;
+      try {
+        final tierRow = await supabase
+            .from('users')
+            .select('profile_illustration_tier1')
+            .eq('user_id', userId)
+            .maybeSingle();
+        tier1ImageUrl = tierRow?['profile_illustration_tier1'] as String?;
+      } catch (e) {
+        print('⚠️ イラストティアカラムが未作成: $e');
+        // カラムが存在しない場合はスキップ
+        return;
+      }
 
       // ティア1の画像がまだ生成されていない場合、生成をリクエスト
       if (profilePhotoUrl != null &&

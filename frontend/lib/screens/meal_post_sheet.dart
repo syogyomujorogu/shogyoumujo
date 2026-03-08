@@ -133,8 +133,66 @@ class _MealPostSheetState extends State<MealPostSheet> {
     final end = cleaned.lastIndexOf('}');
     if (start != -1 && end != -1 && end > start) {
       cleaned = cleaned.substring(start, end + 1);
+    } else if (start != -1) {
+      // "}"が見つからない場合（JSONが途中で切れている）→修復を試みる
+      cleaned = _repairTruncatedJson(cleaned.substring(start));
     }
     return cleaned.trim();
+  }
+
+  /// 途中で切れたJSONを修復する
+  String _repairTruncatedJson(String broken) {
+    print('🔧 JSON修復開始: ${broken.length}文字');
+    // まず必要なフィールドを抽出してJSONを再構築する
+    String? dishName;
+    int? calories;
+    int? healthScore;
+    String? healthRating;
+    String? healthComment;
+
+    // 各フィールドを正規表現で安全に抽出
+    final dishMatch = RegExp(r'"dishName"\s*:\s*"([^"]*?)"').firstMatch(broken);
+    if (dishMatch != null) dishName = dishMatch.group(1);
+
+    final calMatch = RegExp(r'"calories"\s*:\s*(\d+)').firstMatch(broken);
+    if (calMatch != null) calories = int.tryParse(calMatch.group(1)!);
+
+    final scoreMatch = RegExp(r'"healthScore"\s*:\s*(\d+)').firstMatch(broken);
+    if (scoreMatch != null) healthScore = int.tryParse(scoreMatch.group(1)!);
+
+    final ratingMatch =
+        RegExp(r'"healthRating"\s*:\s*"([^"]*?)"').firstMatch(broken);
+    if (ratingMatch != null) healthRating = ratingMatch.group(1);
+
+    final commentMatch =
+        RegExp(r'"healthComment"\s*:\s*"([^"]*?)"').firstMatch(broken);
+    if (commentMatch != null) {
+      healthComment = commentMatch.group(1);
+    } else {
+      // コメントが途中で切れている場合、途中まで取得
+      final partialComment =
+          RegExp(r'"healthComment"\s*:\s*"([^"]*)').firstMatch(broken);
+      if (partialComment != null) {
+        healthComment = '${partialComment.group(1)!.trim()}...';
+      }
+    }
+
+    // 最低限 dishName と calories があれば有効とする
+    if (dishName != null && calories != null) {
+      final repaired = jsonEncode({
+        'dishName': dishName,
+        'calories': calories,
+        'healthScore': healthScore ?? 50,
+        'healthRating': healthRating ?? 'fair',
+        'healthComment': healthComment ?? '分析結果が途中で切れたため、詳細不明',
+      });
+      print('🔧 JSON修復完了: $repaired');
+      return repaired;
+    }
+
+    // 修復不可能な場合、そのまま返す（後でエラーハンドリングされる）
+    print('🔧 JSON修復失敗: 必要なフィールドが見つかりません');
+    return broken;
   }
 
   // カメラで撮影してAI分析（圧縮付き）
@@ -256,13 +314,13 @@ class _MealPostSheetState extends State<MealPostSheet> {
       final candidates = _modelCandidates ?? <String>[];
 
       final prompt = '''
-この食事の画像を分析して、以下の情報を教えてください。
-回答は必ずJSON形式のみで返してください。説明文は不要です。
+この食事の画像を分析して、以下の情報をJSON形式で返してください。
+JSON以外の文字は一切含めないでください。
+healthCommentは30文字以内の短い日本語にしてください。
 
-回答形式:
-{"dishName":"料理名","calories":カロリー数値,"healthScore":健康度0-100,"healthRating":"excellent","healthComment":"コメント"}
+{"dishName":"料理名","calories":500,"healthScore":50,"healthRating":"fair","healthComment":"短いコメント"}
 
-健康度の基準:
+healthRatingはexcellent/good/fair/poorの4段階です。
 ''';
 
       final content = [
@@ -309,10 +367,10 @@ class _MealPostSheetState extends State<MealPostSheet> {
       } catch (e) {
         print('🤖 JSON解析失敗、リトライ中...');
         final retryPrompt = '''
-この食事の画像を分析してください。
-以下の形式で1行のJSONのみを返してください。改行や説明文は不要です。
+この食事の画像を分析してJSON1行だけ返してください。他の文字は不要です。
+healthCommentは20文字以内にしてください。
 
-{"dishName":"料理名","calories":500,"healthScore":50,"healthRating":"fair","healthComment":"コメント"}
+{"dishName":"料理名","calories":500,"healthScore":50,"healthRating":"fair","healthComment":"短評"}
 ''';
         final retryContent = [
           Content.multi([TextPart(retryPrompt), DataPart('image/jpeg', bytes)]),

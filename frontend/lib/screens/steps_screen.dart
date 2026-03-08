@@ -1,23 +1,23 @@
 // =============================================================================
-// steps_screen.dart - 歩数記録・劣化回復画面
+// steps_screen.dart - 歩数記録画面
 // =============================================================================
 // このファイルの役割:
 // 1. スマートフォンの歩数センサーから歩数を取得
 // 2. 歩数をリアルタイムで表示
-// 3. 5000歩ごとに劣化レベルを1つ回復
-// 4. 歩数データをSupabaseに保存
-// 5. 回復進捗バーの表示
+// 3. 1日の目標歩数を達成したら → 慈悲ポイント+1、業スコア少し回復(+3)
+// 4. 歩数データをSupabase steps_historyに保存
+// 5. SharedPreferencesで歩数オフセットを永続化
+// 6. アプリ非表示中の歩数もセンサー差分で自動キャッチアップ
 // =============================================================================
 
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:pedometer/pedometer.dart'; // 歩数計ライブラリ
+import 'package:pedometer/pedometer.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-// Supabaseクライアントのグローバルインスタンス
 final supabase = Supabase.instance.client;
 
-// 歩数記録画面のStatefulWidget
 class StepsScreen extends StatefulWidget {
   const StepsScreen({super.key});
 
@@ -25,270 +25,447 @@ class StepsScreen extends StatefulWidget {
   State<StepsScreen> createState() => _StepsScreenState();
 }
 
-// 歩数記録画面の状態管理クラス
 class _StepsScreenState extends State<StepsScreen> {
-  StreamSubscription<StepCount>? _stepSubscription; // 歩数ストリームの購読
-  int _todaySteps = 0; // 今日の歩数
-  int _initialStepsOffset = 0; // 今日の開始時点の歩数（OS再起動からの累計を補正）
-  bool _isLoading = true; // ローディング状態
-  int _degradeLevel = 0; // 現在の劣化レベル
+  StreamSubscription<StepCount>? _stepSubscription;
+  int _todaySteps = 0;
+  bool _isLoading = true;
+  int _karma = 50; // 業スコア (0-100)
+  int _mercyPoints = 0; // 慈悲ポイント
+  int _dailyGoal = 5000; // 1日の目標歩数
+  bool _goalRewardedToday = false; // 今日の目標達成報酬を既に付与したか
+  int _lastSavedSteps = 0; // DB書き込みスロットル用
 
-  static const int stepsPerLevel = 5000; // 5000歩で1レベル回復
+  // SharedPreferences キー
+  static const String _keyLastRaw = 'steps_last_raw_pedometer';
+  static const String _keyAccumulated = 'steps_accumulated_today';
+  static const String _keyDate = 'steps_date';
+  static const String _keyGoalRewarded = 'steps_goal_rewarded';
+
+  static const int _karmaRecovery = 3; // 目標達成時の業回復量
+  static const int _mercyReward = 1; // 目標達成時の慈悲ポイント
+  static const int _dbWriteThreshold = 10; // N歩ごとにDB書き込み
 
   @override
   void initState() {
     super.initState();
-    // ユーザーの歩数データとレベルを読み込んでから、歩数計を初期化
-    _loadUserStepsAndLevel().then((_) {
-      _initPedometer();
-    });
+    _initialize();
   }
 
   @override
   void dispose() {
-    // メモリリークを防ぐため、歩数ストリームの購読を解除
     _stepSubscription?.cancel();
     super.dispose();
   }
 
-  /// Supabase から現在のユーザ状態（current_steps, degrade_level）を取得
-  Future<void> _loadUserStepsAndLevel() async {
-    final userId = supabase.auth.currentUser!.id;
-
-    // usersテーブルから自分のデータを取得
-    final userRow = await supabase
-        .from('users')
-        .select()
-        .eq('user_id', userId)
-        .single();
-
-    final currentSteps = (userRow['current_steps'] ?? 0) as int;
-    final degradeLevel = (userRow['degrade_level'] ?? 0) as int;
-
-    // 取得したデータを状態に保存
-    setState(() {
-      _todaySteps = currentSteps;
-      _degradeLevel = degradeLevel;
-      _isLoading = false;
-    });
+  /// 初期化: SharedPreferences → DB → ペドメーター の順で起動
+  Future<void> _initialize() async {
+    await _loadPersistedSteps();
+    await _loadUserData();
+    _initPedometer();
+    if (mounted) setState(() => _isLoading = false);
   }
 
-  /// pedometer を初期化して歩数ストリームを購読
+  /// SharedPreferencesから今日の歩数を読み込み、DBとも同期
+  Future<void> _loadPersistedSteps() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedDate = prefs.getString(_keyDate) ?? '';
+    final todayDate = DateTime.now().toIso8601String().substring(0, 10);
+
+    if (savedDate == todayDate) {
+      _todaySteps = prefs.getInt(_keyAccumulated) ?? 0;
+      _goalRewardedToday = prefs.getBool(_keyGoalRewarded) ?? false;
+    } else {
+      // 日付が変わった: リセット
+      _todaySteps = 0;
+      _goalRewardedToday = false;
+      await prefs.setString(_keyDate, todayDate);
+      await prefs.setInt(_keyAccumulated, 0);
+      await prefs.setInt(_keyLastRaw, 0);
+      await prefs.setBool(_keyGoalRewarded, false);
+    }
+
+    // DBの歩数とも比較して大きい方を採用
+    try {
+      final userId = supabase.auth.currentUser!.id;
+      final stepsRow = await supabase
+          .from('steps_history')
+          .select()
+          .eq('user_id', userId)
+          .eq('date', todayDate)
+          .maybeSingle();
+
+      if (stepsRow != null) {
+        final dbSteps = (stepsRow['steps'] ?? 0) as int;
+        if (dbSteps > _todaySteps) {
+          _todaySteps = dbSteps;
+          await prefs.setInt(_keyAccumulated, dbSteps);
+        }
+      }
+    } catch (e) {
+      print('⚠️ DB歩数読み込みエラー: $e');
+    }
+
+    _lastSavedSteps = _todaySteps;
+  }
+
+  /// Supabase から karma, mercy_points, training_daily_steps_goal を取得
+  Future<void> _loadUserData() async {
+    try {
+      final userId = supabase.auth.currentUser!.id;
+      final userRow = await supabase
+          .from('users')
+          .select('karma, mercy_points, training_daily_steps_goal')
+          .eq('user_id', userId)
+          .single();
+      _karma = (userRow['karma'] ?? 50) as int;
+      _mercyPoints = (userRow['mercy_points'] ?? 0) as int;
+      _dailyGoal = (userRow['training_daily_steps_goal'] ?? 5000) as int;
+    } catch (e) {
+      print('⚠️ ユーザーデータ読み込みエラー: $e');
+    }
+  }
+
+  /// ペドメーターを初期化
   void _initPedometer() {
-    // 歩数センサーからのストリームを購読
     _stepSubscription = Pedometer.stepCountStream.listen(
-      _onStepCount, // 歩数が更新されたときの処理
-      onError: _onStepError, // エラーが発生したときの処理
-      cancelOnError: false, // エラーが発生しても購読を続ける
+      _onStepCount,
+      onError: _onStepError,
+      cancelOnError: false,
     );
   }
 
-  // 歩数が更新されたときに呼ばれる関数
-  void _onStepCount(StepCount event) {
-    // 一部端末では OS 再起動からの総歩数が来るので、オフセットを使って「今日分」だけ扱う簡易実装
-    if (_initialStepsOffset == 0) {
-      // 初回のみ、現在の歩数をオフセットとして記録
-      _initialStepsOffset = event.steps;
+  /// 歩数イベント受信
+  Future<void> _onStepCount(StepCount event) async {
+    final prefs = await SharedPreferences.getInstance();
+    final todayDate = DateTime.now().toIso8601String().substring(0, 10);
+    final savedDate = prefs.getString(_keyDate) ?? '';
+
+    // 日付が変わった場合はリセット
+    if (savedDate != todayDate) {
+      _todaySteps = 0;
+      _goalRewardedToday = false;
+      _lastSavedSteps = 0;
+      await prefs.setString(_keyDate, todayDate);
+      await prefs.setInt(_keyAccumulated, 0);
+      await prefs.setInt(_keyLastRaw, event.steps);
+      await prefs.setBool(_keyGoalRewarded, false);
     }
-    // 今日の歩数 = 現在の歩数 - オフセット
-    final stepsToday = event.steps - _initialStepsOffset;
 
-    // 画面がまだ表示されているかチェック
+    final lastRaw = prefs.getInt(_keyLastRaw) ?? 0;
+
+    if (lastRaw == 0) {
+      // 初回: 基準点を設定
+      await prefs.setInt(_keyLastRaw, event.steps);
+    } else {
+      int delta = event.steps - lastRaw;
+      if (delta < 0) delta = 0; // デバイス再起動等
+
+      if (delta > 0) {
+        _todaySteps += delta;
+        await prefs.setInt(_keyAccumulated, _todaySteps);
+      }
+      await prefs.setInt(_keyLastRaw, event.steps);
+    }
+
     if (!mounted) return;
+    setState(() {});
 
-    // 歩数を更新
-    setState(() {
-      _todaySteps = stepsToday;
-    });
+    // DB書き込みスロットル
+    if ((_todaySteps - _lastSavedSteps).abs() >= _dbWriteThreshold) {
+      _lastSavedSteps = _todaySteps;
+      await _saveStepsToHistory();
+    }
 
-    // サーバーに歩数を保存
-    _updateStepsOnServer(stepsToday);
+    // 目標達成チェック
+    if (!_goalRewardedToday && _todaySteps >= _dailyGoal) {
+      await _grantGoalReward();
+    }
   }
 
-  // 歩数取得エラーが発生したときに呼ばれる関数
   void _onStepError(error) {
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('歩数取得エラー: $error')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('歩数取得エラー: $error')),
+    );
   }
 
-  /// Supabase の users.current_steps と steps_history を更新し、
-  /// 必要に応じて劣化レベルを回復させる。
-  Future<void> _updateStepsOnServer(int stepsToday) async {
-    final userId = supabase.auth.currentUser!.id;
+  /// steps_history テーブルに歩数を保存
+  Future<void> _saveStepsToHistory() async {
+    try {
+      final userId = supabase.auth.currentUser!.id;
+      final todayDate = DateTime.now().toIso8601String().substring(0, 10);
 
-    // ========== まずユーザ状態を取得 ==========
-    final userRow = await supabase
-        .from('users')
-        .select()
-        .eq('user_id', userId)
-        .single();
-
-    final currentLevel = (userRow['degrade_level'] ?? 0) as int;
-    final isDegraded = userRow['is_degraded'] ?? false;
-
-    // ========== 劣化レベル回復ロジック ==========
-    // 5000歩ごとに1レベル回復
-    final recoverLevel = (stepsToday / stepsPerLevel).floor();
-    int newLevel = currentLevel;
-
-    if (recoverLevel > 0 && currentLevel > 0) {
-      // 現在のレベルから回復レベルを引く（最小0、最大9）
-      newLevel = (currentLevel - recoverLevel).clamp(0, 9);
-    }
-
-    // レベルが0になったら劣化状態を解除
-    final bool newIsDegraded = newLevel > 0 ? true : false;
-
-    // ========== users テーブルの更新 ==========
-    await supabase
-        .from('users')
-        .update({
-          'current_steps': stepsToday,
-          'degrade_level': newLevel,
-          'is_degraded': newIsDegraded,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        })
-        .eq('user_id', userId);
-
-    // ========== steps_history にも記録 ==========
-    // 同じ日付のレコードがあれば上書き
-    final todayDate = DateTime.now().toIso8601String().substring(0, 10);
-
-    // 既存レコードをチェック
-    final existing = await supabase
-        .from('steps_history')
-        .select()
-        .eq('user_id', userId)
-        .eq('date', todayDate);
-
-    if (existing.isEmpty) {
-      // レコードがない場合は新規作成
-      await supabase.from('steps_history').insert({
-        'user_id': userId,
-        'date': todayDate,
-        'steps': stepsToday,
-      });
-    } else {
-      // レコードがある場合は更新
-      await supabase
+      final existing = await supabase
           .from('steps_history')
-          .update({'steps': stepsToday})
+          .select()
           .eq('user_id', userId)
           .eq('date', todayDate);
+
+      if (existing.isEmpty) {
+        await supabase.from('steps_history').insert({
+          'user_id': userId,
+          'date': todayDate,
+          'steps': _todaySteps,
+        });
+      } else {
+        await supabase
+            .from('steps_history')
+            .update({'steps': _todaySteps})
+            .eq('user_id', userId)
+            .eq('date', todayDate);
+      }
+    } catch (e) {
+      print('⚠️ 歩数保存エラー: $e');
     }
+  }
 
-    // 画面がまだ表示されているかチェック
-    if (!mounted) return;
+  /// 目標達成報酬を付与: 慈悲ポイント+1、業+3
+  Future<void> _grantGoalReward() async {
+    try {
+      final userId = supabase.auth.currentUser!.id;
 
-    // 劣化レベルを更新
-    setState(() {
-      _degradeLevel = newLevel;
-    });
+      // 最新のkarmaとmercy_pointsを取得
+      final userRow = await supabase
+          .from('users')
+          .select('karma, mercy_points')
+          .eq('user_id', userId)
+          .single();
 
-    // ========== レベルが下がったときに通知 ==========
-    if (newLevel < currentLevel && isDegraded) {
+      final currentKarma = (userRow['karma'] ?? 50) as int;
+      final currentMercy = (userRow['mercy_points'] ?? 0) as int;
+      final newKarma = (currentKarma + _karmaRecovery).clamp(0, 100);
+      final newMercy = currentMercy + _mercyReward;
+
+      await supabase.from('users').update({
+        'karma': newKarma,
+        'mercy_points': newMercy,
+      }).eq('user_id', userId);
+
+      // フラグを永続化
+      _goalRewardedToday = true;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_keyGoalRewarded, true);
+
+      if (!mounted) return;
+      setState(() {
+        _karma = newKarma;
+        _mercyPoints = newMercy;
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('👏 修行により劣化レベルが $currentLevel → $newLevel に回復しました'),
+          content: Text(
+              '🎉 目標達成！ 慈悲ポイント+$_mercyReward、業スコア $currentKarma → $newKarma (+$_karmaRecovery)'),
           backgroundColor: Colors.green,
+          duration: const Duration(seconds: 4),
         ),
       );
+    } catch (e) {
+      print('⚠️ 目標達成報酬エラー: $e');
     }
   }
 
-  /// 進捗バー用：現在のレベルで、次に 1 レベル回復するまでに必要な残り歩数
-  int _stepsToNextRecovery() {
-    // これまでに回復に使った歩数
-    final stepsUsedForRecover = (_todaySteps ~/ stepsPerLevel) * stepsPerLevel;
-    // 次の回復までの残り歩数
-    final remain = stepsPerLevel - (_todaySteps - stepsUsedForRecover);
-    
-    if (_degradeLevel <= 0) {
-      return 0; // 既にレベル0なら残り0
-    }
-    return remain.clamp(0, stepsPerLevel);
-  }
-
-  /// 進捗バー用：次の回復までの進捗率（0.0〜1.0）
-  double _progressToNextRecovery() {
-    if (_degradeLevel <= 0) return 1.0; // 既にレベル0なら100%
-    final remain = _stepsToNextRecovery();
-    return ((stepsPerLevel - remain) / stepsPerLevel).clamp(0.0, 1.0);
+  /// 目標までの進捗率 (0.0〜1.0)
+  double _goalProgress() {
+    if (_dailyGoal <= 0) return 1.0;
+    return (_todaySteps / _dailyGoal).clamp(0.0, 1.0);
   }
 
   @override
   Widget build(BuildContext context) {
-    // データ読み込み中はローディング表示
     if (_isLoading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    final stepsRemain = _stepsToNextRecovery();
+    final stepsRemaining = (_dailyGoal - _todaySteps).clamp(0, _dailyGoal);
+    final goalAchieved = _todaySteps >= _dailyGoal;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('修行（歩数で回復）')),
+      appBar: AppBar(
+        title: const Text('歩数記録'),
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        elevation: 0,
+      ),
+      backgroundColor: Colors.grey[50],
       body: Padding(
         padding: const EdgeInsets.all(24.0),
         child: Column(
           children: [
-            const SizedBox(height: 16),
-            // ========== 今日の歩数表示 ==========
-            const Text(
-              '今日の歩数',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              '$_todaySteps 歩',
-              style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 24),
-            
-            // ========== 現在の劣化レベル表示 ==========
-            const Text('現在の劣化レベル', style: TextStyle(fontSize: 18)),
             const SizedBox(height: 8),
-            Text(
-              'レベル $_degradeLevel / 9',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: _degradeLevel > 0 ? Colors.red : Colors.green,
+
+            // ========== 今日の歩数 ==========
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Column(
+                children: [
+                  const Text(
+                    '今日の歩数',
+                    style: TextStyle(fontSize: 16, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '$_todaySteps',
+                    style: TextStyle(
+                      fontSize: 52,
+                      fontWeight: FontWeight.bold,
+                      color: goalAchieved ? Colors.green : Colors.orange,
+                    ),
+                  ),
+                  Text(
+                    '/ $_dailyGoal 歩',
+                    style: const TextStyle(fontSize: 16, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 16),
+                  // 目標進捗バー
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: LinearProgressIndicator(
+                      value: _goalProgress(),
+                      minHeight: 14,
+                      backgroundColor: Colors.grey.shade200,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        goalAchieved ? Colors.green : Colors.orange,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (goalAchieved)
+                    Text(
+                      _goalRewardedToday ? '🎉 目標達成！ 報酬獲得済み' : '🎉 目標達成！',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green,
+                      ),
+                    )
+                  else
+                    Text(
+                      'あと $stepsRemaining 歩で目標達成',
+                      style: const TextStyle(fontSize: 15, color: Colors.grey),
+                    ),
+                ],
               ),
             ),
-            const SizedBox(height: 24),
-            
-            // ========== 回復進捗バー ==========
-            if (_degradeLevel > 0) ...[
-              // 劣化している場合のみ進捗バーを表示
-              const Text('次の回復までの進捗', style: TextStyle(fontSize: 16)),
-              const SizedBox(height: 8),
-              LinearProgressIndicator(
-                value: _progressToNextRecovery(), // 進捗率
-                backgroundColor: Colors.grey.shade300,
-                valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
-                minHeight: 12,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'あと $stepsRemain 歩でレベルが 1 つ回復します',
-                style: const TextStyle(fontSize: 14),
-              ),
-            ] else ...[
-              // 劣化していない場合のメッセージ
-              const Text(
-                '✨ あなたは完全な状態です。修行を続けて徳を積みましょう。',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 16, color: Colors.green),
-              ),
-            ],
+            const SizedBox(height: 20),
+
+            // ========== ステータスカード ==========
+            Row(
+              children: [
+                // 業スコア
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.05),
+                          blurRadius: 8,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        const Text('業スコア',
+                            style: TextStyle(fontSize: 13, color: Colors.grey)),
+                        const SizedBox(height: 4),
+                        Text(
+                          '$_karma',
+                          style: TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                            color: _karma >= 50 ? Colors.green : Colors.red,
+                          ),
+                        ),
+                        Text('/ 100',
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey.shade400)),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                // 慈悲ポイント
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.05),
+                          blurRadius: 8,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        const Text('慈悲ポイント',
+                            style: TextStyle(fontSize: 13, color: Colors.grey)),
+                        const SizedBox(height: 4),
+                        Text(
+                          '$_mercyPoints',
+                          style: const TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.orange,
+                          ),
+                        ),
+                        Text('送信可能',
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey.shade400)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
             const Spacer(),
-            
-            // ========== 注意書き ==========
+
+            // ========== 報酬説明 ==========
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                children: [
+                  const Text(
+                    '📋 目標達成ボーナス',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '1日 $_dailyGoal 歩を達成すると：\n'
+                    '・慈悲ポイント +$_mercyReward\n'
+                    '・業スコア +$_karmaRecovery',
+                    style: const TextStyle(fontSize: 13, color: Colors.black87),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
             const Text(
-              '※ 5000歩ごとに劣化レベルが1つ回復します',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
+              '※ アプリを閉じていた間の歩数も自動で反映されます',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: Colors.grey),
             ),
           ],
         ),

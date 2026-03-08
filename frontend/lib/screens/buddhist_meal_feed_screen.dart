@@ -28,6 +28,26 @@ class BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
     loadMeals();
   }
 
+  /// 業スコアに応じたティア画像URLを取得（なければphoto_url）
+  String? _getTierPhotoUrl(Map<String, dynamic> userInfo) {
+    final karma = (userInfo['karma'] ?? 50) as int;
+    String tierKey;
+    if (karma <= 20) {
+      tierKey = 'profile_illustration_tier1';
+    } else if (karma <= 40) {
+      tierKey = 'profile_illustration_tier2';
+    } else if (karma <= 60) {
+      tierKey = 'profile_illustration_tier3';
+    } else if (karma <= 80) {
+      tierKey = 'profile_illustration_tier4';
+    } else {
+      tierKey = 'profile_illustration_tier5';
+    }
+    final tierUrl = userInfo[tierKey] as String?;
+    if (tierUrl != null && tierUrl.isNotEmpty) return tierUrl;
+    return userInfo['photo_url'] as String?;
+  }
+
   int _calcStreak(List<Map<String, dynamic>> meals) {
     if (meals.isEmpty) return 0;
     final now = DateTime.now();
@@ -125,7 +145,8 @@ class BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
         if (blockedIds.contains(uid) || mutedIds.contains(uid)) continue;
         final info = await supabase
             .from('users')
-            .select('user_id, display_name, custom_user_id, photo_url')
+            .select(
+                'user_id, display_name, custom_user_id, photo_url, karma, profile_illustration_tier1, profile_illustration_tier2, profile_illustration_tier3, profile_illustration_tier4, profile_illustration_tier5')
             .eq('user_id', uid)
             .maybeSingle();
         if (info != null) userInfoMap[uid] = info;
@@ -386,7 +407,7 @@ class BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
     final totalMeals = group['totalMeals'] as int;
     final effortLevel = group['effortLevel'] as String;
     final displayName = userInfo['display_name'] as String? ?? 'あなた';
-    final photoUrl = userInfo['photo_url'] as String?;
+    final photoUrl = _getTierPhotoUrl(userInfo);
     final recentMeals = meals.take(5).toList();
 
     return Container(
@@ -617,7 +638,7 @@ class BuddhistMealFeedScreenState extends State<BuddhistMealFeedScreen> {
     final totalMeals = group['totalMeals'] as int;
     final effortLevel = group['effortLevel'] as String;
     final displayName = userInfo['display_name'] as String? ?? '修行者';
-    final photoUrl = userInfo['photo_url'] as String?;
+    final photoUrl = _getTierPhotoUrl(userInfo);
     final isMe = group['isMe'] == true;
     final weightChange = group['weightChange'] as double?;
     final latestWeight = group['latestWeight'] as double?;

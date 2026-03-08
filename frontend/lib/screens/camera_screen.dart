@@ -210,74 +210,44 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  /// ユーザーの current_calories を加算し、
-  /// 2000kcal 以上なら劣化レベルを 0〜9 の範囲で上げる。
-  /// レベルが 1 以上になったタイミングで、劣化顔を生成して degraded_photo_url に保存。
+  /// ユーザーの業スコア（karma）を不健康な食事に応じて減少させる。
+  /// カロリーに応じて業スコアを調整する。
   Future<void> _updateUserDegradation({
     required String userId,
     required int addCalories,
   }) async {
-    // ========== 現在のユーザー状態を取得 ==========
-    final userRow =
-        await supabase.from('users').select().eq('user_id', userId).single();
+    try {
+      // ========== 現在のユーザー状態を取得 ==========
+      final userRow = await supabase
+          .from('users')
+          .select('karma')
+          .eq('user_id', userId)
+          .single();
 
-    final currentCalories = (userRow['current_calories'] ?? 0) as int;
-    final currentLevel = (userRow['degrade_level'] ?? 0) as int;
-    // photo_url は将来の劣化アバター機能で使用予定
+      final currentKarma = (userRow['karma'] ?? 50) as int;
 
-    // ========== 新しいカロリー計算 ==========
-    final newCalories = currentCalories + addCalories;
+      // ========== 業スコア減少ロジック ==========
+      // 高カロリーほど業が下がる（500kcalで-1、1000kcalで-2...）
+      final karmaDecrease = (addCalories / 500).floor().clamp(0, 10);
+      final newKarma = (currentKarma - karmaDecrease).clamp(0, 100);
 
-    int newLevel = currentLevel;
-    bool isDegraded = userRow['is_degraded'] ?? false;
-    String? degradedPhotoUrl = userRow['degraded_photo_url'];
-    bool skippedAvatarGeneration = false;
+      // ========== Supabaseのusersテーブルを更新 ==========
+      await supabase.from('users').update({
+        'karma': newKarma,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('user_id', userId);
 
-    // ========== 劣化判定ロジック ==========
-    if (newCalories >= 2000) {
-      // 2000kcalを超えた分を計算
-      final over = newCalories - 2000;
-      // 250kcalごとに1レベル上昇（最大レベル9）
-      final extraLevel = (over / 250).floor() + 1; // 2000でLv1
-      newLevel = extraLevel.clamp(1, 9);
-      isDegraded = true;
-
-      // ========== 劣化顔の生成 ==========
-      // Geminiキーのみ運用のため、劣化顔生成は無効化
-      if (degradedPhotoUrl == null || degradedPhotoUrl.isEmpty) {
-        skippedAvatarGeneration = true;
-      }
-    } else {
-      // まだ2000未満ならレベル0 & isDegraded=false
-      newLevel = 0;
-      isDegraded = false;
-      degradedPhotoUrl = userRow['degraded_photo_url'];
-    }
-
-    // ========== Supabaseのusersテーブルを更新 ==========
-    await supabase.from('users').update({
-      'current_calories': newCalories,
-      'degrade_level': newLevel,
-      'is_degraded': isDegraded,
-      'degraded_photo_url': degradedPhotoUrl,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }).eq('user_id', userId);
-
-    // ========== 劣化した場合の通知 ==========
-    if (isDegraded && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('⚠️ 暴食により劣化レベルが $newLevel になりました'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      if (skippedAvatarGeneration) {
+      // ========== 業が下がった場合の通知 ==========
+      if (newKarma < currentKarma && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('ℹ️ 劣化アイコン生成は現在スキップ設定です'),
+          SnackBar(
+            content: Text('⚠️ 暴食により業スコアが $currentKarma → $newKarma に低下しました'),
+            backgroundColor: Colors.red,
           ),
         );
       }
+    } catch (e) {
+      print('⚠️ 業スコア更新エラー: $e');
     }
   }
 

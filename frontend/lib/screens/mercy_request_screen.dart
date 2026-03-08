@@ -41,11 +41,8 @@ class _MercyRequestScreenState extends State<MercyRequestScreen> {
     final userId = supabase.auth.currentUser!.id;
 
     // ========== 自分のユーザー情報を取得 ==========
-    final userResponse = await supabase
-        .from('users')
-        .select()
-        .eq('user_id', userId)
-        .single();
+    final userResponse =
+        await supabase.from('users').select().eq('user_id', userId).single();
 
     setState(() {
       _userData = userResponse;
@@ -57,16 +54,13 @@ class _MercyRequestScreenState extends State<MercyRequestScreen> {
         .select('friend_id')
         .eq('user_id', userId);
 
-    final friendIds = friendsData
-        .map<String>((row) => row['friend_id'] as String)
-        .toList();
+    final friendIds =
+        friendsData.map<String>((row) => row['friend_id'] as String).toList();
 
     if (friendIds.isNotEmpty) {
       // フレンドのIDリストからユーザー情報を取得
-      final friendsResponse = await supabase
-          .from('users')
-          .select()
-          .inFilter('user_id', friendIds);
+      final friendsResponse =
+          await supabase.from('users').select().inFilter('user_id', friendIds);
 
       setState(() {
         _friends = List<Map<String, dynamic>>.from(friendsResponse);
@@ -108,14 +102,13 @@ class _MercyRequestScreenState extends State<MercyRequestScreen> {
     }
   }
 
-  /// 慈悲ポイントを使って劣化レベルを回復する関数
+  /// 慈悲ポイントを使って業スコアを回復する関数
   Future<void> _useMercyPoints() async {
     final userId = supabase.auth.currentUser!.id;
     final mercyPoints = (_userData?['mercy_points'] ?? 0) as int;
-    final degradeLevel = (_userData?['degrade_level'] ?? 0) as int;
+    final karma = (_userData?['karma'] ?? 50) as int;
 
     // ========== バリデーション ==========
-    // 慈悲ポイントが足りない場合
     if (mercyPoints <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('慈悲ポイントが不足しています')),
@@ -123,36 +116,30 @@ class _MercyRequestScreenState extends State<MercyRequestScreen> {
       return;
     }
 
-    // すでに劣化していない場合
-    if (degradeLevel <= 0) {
+    if (karma >= 100) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('すでに完全な状態です')),
+        const SnackBar(content: Text('すでに業スコアが最高です')),
       );
       return;
     }
 
-    // ========== 劣化レベルを回復 ==========
-    // 1ポイントで1レベル回復
-    final newLevel = (degradeLevel - 1).clamp(0, 9);
+    // ========== 業スコアを回復 ==========
+    // 1ポイントで業+5回復
+    final newKarma = (karma + 5).clamp(0, 100);
     final newMercyPoints = mercyPoints - 1;
-    final newIsDegraded = newLevel > 0;
 
-    // usersテーブルを更新
     await supabase.from('users').update({
-      'degrade_level': newLevel,
+      'karma': newKarma,
       'mercy_points': newMercyPoints,
-      'is_degraded': newIsDegraded,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     }).eq('user_id', userId);
 
-    // データを再読み込み
     await _loadData();
 
-    // 成功メッセージを表示
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('🙏 慈悲により劣化レベルが $degradeLevel → $newLevel に回復しました'),
+          content: Text('🙏 慈悲により業スコアが $karma → $newKarma に回復しました'),
           backgroundColor: Colors.green,
         ),
       );
@@ -169,7 +156,7 @@ class _MercyRequestScreenState extends State<MercyRequestScreen> {
     }
 
     final mercyPoints = (_userData?['mercy_points'] ?? 0) as int;
-    final degradeLevel = (_userData?['degrade_level'] ?? 0) as int;
+    final karma = (_userData?['karma'] ?? 50) as int;
 
     return Scaffold(
       appBar: AppBar(
@@ -212,22 +199,22 @@ class _MercyRequestScreenState extends State<MercyRequestScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    // 現在の劣化レベルを表示
+                    // 現在の業スコアを表示
                     Text(
-                      '現在の劣化レベル: $degradeLevel / 9',
-                      style: const TextStyle(
+                      '現在の業スコア: $karma / 100',
+                      style: TextStyle(
                         fontSize: 16,
-                        color: Colors.grey,
+                        color: karma >= 50 ? Colors.green : Colors.red,
                       ),
                     ),
                     const SizedBox(height: 24),
                     // ポイント使用ボタン
                     ElevatedButton.icon(
-                      onPressed: mercyPoints > 0 && degradeLevel > 0
-                          ? _useMercyPoints // ポイントがあってレベルが1以上なら実行
-                          : null, // それ以外は無効化
+                      onPressed: mercyPoints > 0 && karma < 100
+                          ? _useMercyPoints
+                          : null,
                       icon: const Icon(Icons.healing),
-                      label: const Text('1ポイント使って回復する'),
+                      label: const Text('1ポイント使って業を回復する'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.red,
                         foregroundColor: Colors.white,
@@ -239,7 +226,7 @@ class _MercyRequestScreenState extends State<MercyRequestScreen> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      '※ 1ポイントで劣化レベルが1つ回復します',
+                      '※ 1ポイントで業スコアが+5回復します',
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                       textAlign: TextAlign.center,
                     ),

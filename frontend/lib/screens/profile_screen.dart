@@ -29,6 +29,7 @@ import 'reel_settings_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../widgets/icon_degrade_filter.dart';
 import '../services/illustration_tier_manager.dart'; // 業テイア画像管理
+import 'mercy_request_screen.dart'; // 慈悲リクエスト画面
 
 // Supabaseクライアントのグローバルインスタンス
 final supabase = Supabase.instance.client;
@@ -64,7 +65,7 @@ class _ProfileScreenState extends State<ProfileScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 1, vsync: this);
     // 画面が表示されたときにすべてのデータを読み込む
     _loadAllData();
   }
@@ -174,6 +175,26 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
+  /// 業スコアに応じたティア画像URLを取得するヘルパー
+  String? _getKarmaTierUrl(Map<String, dynamic>? userData, int karma) {
+    if (userData == null) return null;
+    String tierKey;
+    if (karma <= 20) {
+      tierKey = 'profile_illustration_tier1';
+    } else if (karma <= 40) {
+      tierKey = 'profile_illustration_tier2';
+    } else if (karma <= 60) {
+      tierKey = 'profile_illustration_tier3';
+    } else if (karma <= 80) {
+      tierKey = 'profile_illustration_tier4';
+    } else {
+      tierKey = 'profile_illustration_tier5';
+    }
+    final tierUrl = userData[tierKey] as String?;
+    if (tierUrl != null && tierUrl.isNotEmpty) return tierUrl;
+    return userData['photo_url'] as String?;
+  }
+
   // 慈悲リクエストを読み込む関数
   Future<void> _loadMercyRequests() async {
     try {
@@ -184,7 +205,8 @@ class _ProfileScreenState extends State<ProfileScreen>
       try {
         final response = await supabase
             .from('mercy_requests')
-            .select('*, requester:users!requester_id(display_name, email)')
+            .select(
+                '*, requester:users!requester_id(display_name, email, photo_url, karma, profile_illustration_tier1, profile_illustration_tier2, profile_illustration_tier3, profile_illustration_tier4, profile_illustration_tier5)')
             .eq('receiver_id', userId)
             .eq('status', 'pending')
             .order('created_at', ascending: false);
@@ -334,6 +356,28 @@ class _ProfileScreenState extends State<ProfileScreen>
   Future<void> _approveMercyRequest(
       String requestId, String requesterId) async {
     try {
+      final userId = supabase.auth.currentUser!.id;
+
+      // ========== 自分の慈悲ポイントを確認 ==========
+      final myData = await supabase
+          .from('users')
+          .select('mercy_points')
+          .eq('user_id', userId)
+          .single();
+      final myMercy = (myData['mercy_points'] ?? 0) as int;
+
+      if (myMercy <= 0) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('慈悲ポイントが不足しています（自分のポイントを1消費します）'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
       // ========== リクエスターに慈悲ポイントを付与 ==========
       final requesterData = await supabase
           .from('users')
@@ -343,11 +387,17 @@ class _ProfileScreenState extends State<ProfileScreen>
 
       final currentPoints = (requesterData['mercy_points'] ?? 0) as int;
 
-      // ポイントを1増やす
+      // リクエスターに+1
       await supabase.from('users').update({
         'mercy_points': currentPoints + 1,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('user_id', requesterId);
+
+      // 自分は-1
+      await supabase.from('users').update({
+        'mercy_points': myMercy - 1,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('user_id', userId);
 
       // ========== リクエストのステータスを更新 ==========
       await supabase.from('mercy_requests').update({
@@ -357,11 +407,13 @@ class _ProfileScreenState extends State<ProfileScreen>
 
       // リクエストリストを再読み込み
       await _loadMercyRequests();
+      // ユーザーデータも再読み込み（ポイントが変わるため）
+      await _loadUserData();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('🙏 慈悲を与えました'),
+          SnackBar(
+            content: Text('🙏 慈悲を与えました（残り ${myMercy - 1} ポイント）'),
             backgroundColor: Colors.green,
           ),
         );
@@ -2192,20 +2244,18 @@ class _ProfileScreenState extends State<ProfileScreen>
                               itemCount: currentFriends.length,
                               itemBuilder: (context, index) {
                                 final friend = currentFriends[index];
-                                final friendPhotoUrl =
-                                    friend['profile_illustration_url'] ??
-                                        friend['photo_url'];
                                 final friendKarma = friend['karma'] ?? 50;
-                                final friendBuddhaUrl =
-                                    friend['profile_buddha_illustration_url'];
+                                final friendPhotoUrl = _getKarmaTierUrl(friend,
+                                    friendKarma is int ? friendKarma : 50);
 
                                 return ListTile(
                                   leading: (friendPhotoUrl != null &&
                                           friendPhotoUrl != '')
                                       ? DegradedIconDisplay(
                                           imageUrl: friendPhotoUrl,
-                                          buddhaImageUrl: friendBuddhaUrl,
-                                          karma: friendKarma,
+                                          karma: friendKarma is int
+                                              ? friendKarma
+                                              : 50,
                                           size: 40,
                                           shape: BoxShape.circle,
                                         )
@@ -2386,21 +2436,22 @@ class _ProfileScreenState extends State<ProfileScreen>
                                 final request = pendingRequests[index];
                                 final requester = request['requester']
                                     as Map<String, dynamic>?;
-                                final requesterPhotoUrl =
-                                    requester?['profile_illustration_url'] ??
-                                        requester?['photo_url'];
                                 final requesterKarma =
                                     requester?['karma'] ?? 50;
-                                final requesterBuddhaUrl = requester?[
-                                    'profile_buddha_illustration_url'];
+                                final requesterPhotoUrl = _getKarmaTierUrl(
+                                    requester,
+                                    requesterKarma is int
+                                        ? requesterKarma
+                                        : 50);
 
                                 return ListTile(
                                   leading: (requesterPhotoUrl != null &&
                                           requesterPhotoUrl != '')
                                       ? DegradedIconDisplay(
                                           imageUrl: requesterPhotoUrl,
-                                          buddhaImageUrl: requesterBuddhaUrl,
-                                          karma: requesterKarma,
+                                          karma: requesterKarma is int
+                                              ? requesterKarma
+                                              : 50,
                                           size: 40,
                                           shape: BoxShape.circle,
                                         )
@@ -2597,18 +2648,15 @@ class _ProfileScreenState extends State<ProfileScreen>
               final request = _mercyRequests[index];
               final requester = request['requester'] as Map<String, dynamic>?;
               final requesterName = requester?['display_name'] ?? 'ユーザー';
-              final requesterPhoto = requester?['profile_illustration_url'] ??
-                  requester?['photo_url'] as String?;
               final requesterKarma = requester?['karma'] ?? 50;
-              final requesterBuddhaUrl =
-                  requester?['profile_buddha_illustration_url'];
+              final requesterPhoto = _getKarmaTierUrl(
+                  requester, requesterKarma is int ? requesterKarma : 50);
 
               return ListTile(
                 leading: (requesterPhoto != null && requesterPhoto.isNotEmpty)
                     ? DegradedIconDisplay(
                         imageUrl: requesterPhoto,
-                        buddhaImageUrl: requesterBuddhaUrl,
-                        karma: requesterKarma,
+                        karma: requesterKarma is int ? requesterKarma : 50,
                         size: 40,
                         shape: BoxShape.circle,
                       )
@@ -2662,17 +2710,12 @@ class _ProfileScreenState extends State<ProfileScreen>
       );
     }
 
-    // 劣化している場合は劣化顔を表示
-    final isDegraded = _userData?['is_degraded'] ?? false;
-    final photoUrl = isDegraded
-        ? (_userData?['degraded_photo_url'] ?? _userData?['photo_url'])
-        : (_userData?['profile_illustration_url'] ?? _userData?['photo_url']);
-
-    // 業スコア取得（業連動アイコンシステム用）
+    // 業スコアに応じてアイコンを選択（50未満は劣化状態）
     final karma = _userData?['karma'] ?? 50;
-
-    // 仏イラストURL取得（業100達成時用）
-    final buddhaImageUrl = _userData?['profile_buddha_illustration_url'];
+    final isDegraded = (karma is int ? karma : 50) < 50;
+    // 業スコアに応じたティア画像を取得
+    final photoUrl = _getKarmaTierUrl(_userData, karma is int ? karma : 50) ??
+        _userData?['photo_url'];
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -2685,6 +2728,48 @@ class _ProfileScreenState extends State<ProfileScreen>
               const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
         ),
         actions: [
+          // 慈悲リクエストボタン（ベルの左）
+          Stack(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.favorite, color: Colors.orange),
+                tooltip: '慈悲リクエスト',
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const MercyRequestScreen(),
+                    ),
+                  );
+                },
+              ),
+              if (_mercyRequests.isNotEmpty)
+                Positioned(
+                  right: 8,
+                  top: 8,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 16,
+                      minHeight: 16,
+                    ),
+                    child: Text(
+                      _mercyRequests.length.toString(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
+          ),
           // 未読通知があれば赤いバッジ付きベルアイコン
           Stack(
             children: [
@@ -2870,7 +2955,15 @@ class _ProfileScreenState extends State<ProfileScreen>
                               ),
                             ),
                             TextButton(
-                              onPressed: _showMercyRequestsDialog,
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) =>
+                                        const MercyRequestScreen(),
+                                  ),
+                                );
+                              },
                               child: const Text('確認',
                                   style:
                                       TextStyle(fontWeight: FontWeight.bold)),
@@ -2992,25 +3085,21 @@ class _ProfileScreenState extends State<ProfileScreen>
               ),
               const Divider(height: 1),
 
-              // ========== タブバー（投稿 / 慈悲リクエスト）==========
+              // ========== タブバー（投稿）==========
               TabBar(
                 controller: _tabController,
                 labelColor: Colors.black,
                 unselectedLabelColor: Colors.grey,
                 indicatorColor: Colors.black,
-                tabs: [
-                  const Tab(
+                tabs: const [
+                  Tab(
                     icon: Icon(Icons.grid_on),
                     text: '投稿',
-                  ),
-                  Tab(
-                    icon: const Icon(Icons.favorite),
-                    text: '慈悲リクエスト (${_mercyRequests.length})',
                   ),
                 ],
               ),
 
-              // ========== タブビュー（投稿グリッド / 慈悲リクエスト一覧）==========
+              // ========== タブビュー（投稿グリッド）==========
               SizedBox(
                 height: MediaQuery.of(context).size.height * 0.6,
                 child: TabBarView(
@@ -3018,8 +3107,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                   children: [
                     // タブ1: 投稿グリッド
                     _buildMealsGrid(),
-                    // タブ2: 慈悲リクエスト一覧
-                    _buildMercyRequestsList(),
                   ],
                 ),
               ),
@@ -3356,11 +3443,9 @@ class _ProfileScreenState extends State<ProfileScreen>
         final request = _mercyRequests[index];
         final requester = request['requester'] as Map<String, dynamic>?;
         final requesterName = requester?['display_name'] ?? 'ユーザー';
-        final requesterPhoto = requester?['profile_illustration_url'] ??
-            requester?['photo_url'] as String?;
         final requesterKarma = requester?['karma'] ?? 50;
-        final requesterBuddhaUrl =
-            requester?['profile_buddha_illustration_url'];
+        final requesterPhoto = _getKarmaTierUrl(
+            requester, requesterKarma is int ? requesterKarma : 50);
         final requesterCustomId = requester?['custom_user_id'] as String?;
 
         return Card(
@@ -3369,8 +3454,7 @@ class _ProfileScreenState extends State<ProfileScreen>
             leading: (requesterPhoto != null && requesterPhoto.isNotEmpty)
                 ? DegradedIconDisplay(
                     imageUrl: requesterPhoto,
-                    buddhaImageUrl: requesterBuddhaUrl,
-                    karma: requesterKarma,
+                    karma: requesterKarma is int ? requesterKarma : 50,
                     size: 40,
                     shape: BoxShape.circle,
                   )
@@ -3691,9 +3775,13 @@ class _ProfileScreenState extends State<ProfileScreen>
             ),
           ],
         ),
-        child: Image.network(
-          currentTierImageUrl,
-          fit: BoxFit.cover,
+        child: ClipOval(
+          child: Image.network(
+            currentTierImageUrl,
+            width: 74,
+            height: 74,
+            fit: BoxFit.cover,
+          ),
         ),
       );
     } else if (photoUrl != null && photoUrl.isNotEmpty) {

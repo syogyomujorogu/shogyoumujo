@@ -12,6 +12,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'reel_settings_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'weekly_summary_dialog.dart';
 
 // Supabaseクライアントのグローバルインスタンス
 final supabase = Supabase.instance.client;
@@ -141,6 +142,34 @@ class _MyDataScreenState extends State<MyDataScreen> {
                   children: [
                     // ヘッダー
                     _buildHeader(),
+                    const SizedBox(height: 16),
+
+                    // ========== 今週の修業まとめボタン ==========
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          showDialog(
+                            context: context,
+                            builder: (context) => const WeeklySummaryDialog(),
+                          );
+                        },
+                        icon: const Icon(Icons.summarize, size: 24),
+                        label: const Text(
+                          '今週の修業まとめを見る',
+                          style: TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.deepPurple,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 24),
 
                     // ========== 業（Karma）スコア表示 ==========

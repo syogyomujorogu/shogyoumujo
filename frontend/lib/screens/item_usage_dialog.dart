@@ -45,11 +45,12 @@ class _ItemUsageDialogState extends State<ItemUsageDialog> {
     try {
       final userId = supabase.auth.currentUser!.id;
 
-      // 既にこの食事にアイテムが使用されているかチェック
+      // 既にこの食事にこのユーザーがアイテムを使用しているかチェック
       final usageCheck = await supabase
           .from('item_usage_history')
           .select()
           .eq('meal_id', widget.mealId)
+          .eq('user_id', userId)
           .maybeSingle();
 
       if (usageCheck != null) {
@@ -128,25 +129,101 @@ class _ItemUsageDialogState extends State<ItemUsageDialog> {
           .from('meals')
           .update({'calories': modifiedCalories}).eq('id', widget.mealId);
 
-      // 増量チケットの場合は通知を作成
+      // ========== 業スコアの更新（実際のカロリー変動量ベース） ==========
+      // 変動カロリー 500kcal につき業±1（camera_screen.dartと同じ基準）
+      // 例: 800kcal × 30%増 = +240kcal → 業-0, 800kcal × 100%増 = +800kcal → 業-1
+      // 例: 800kcal × 30%減 = -240kcal → 業+0, 800kcal × 100%減 = -800kcal → 業+1
+      int karmaChange = 0;
+      try {
+        final calorieDiff = (modifiedCalories - widget.currentCalories).abs();
+        final karmaAmount = (calorieDiff / 500).floor().clamp(0, 10);
+        final targetUserId = widget.isOwnMeal ? userId : widget.mealOwnerId;
+        final targetUser = await supabase
+            .from('users')
+            .select('karma')
+            .eq('user_id', targetUserId)
+            .single();
+        final currentKarma = (targetUser['karma'] ?? 50) as int;
+
+        if (karmaAmount > 0) {
+          if (widget.isOwnMeal) {
+            // 慈悲系: カロリー減った分だけ業回復
+            karmaChange = karmaAmount;
+          } else {
+            // 業系: カロリー増えた分だけ相手の業低下
+            karmaChange = -karmaAmount;
+          }
+          final newKarma = (currentKarma + karmaChange).clamp(0, 100);
+          await supabase.from('users').update({
+            'karma': newKarma,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          }).eq('user_id', targetUserId);
+        }
+      } catch (e) {
+        print('⚠️ アイテム使用時の業スコア更新エラー: $e');
+      }
+
+      // 他人の食事にアイテムを使用した場合は通知を作成
       if (!widget.isOwnMeal) {
-        await supabase.from('item_usage_notifications').insert({
-          'recipient_id': widget.mealOwnerId,
-          'sender_id': userId,
-          'item_id': itemId,
-          'meal_id': widget.mealId,
-          'effect_percentage': effectValue,
-        });
+        // 送信者の表示名を取得
+        String senderName = '誰か';
+        try {
+          final senderData = await supabase
+              .from('users')
+              .select('display_name')
+              .eq('user_id', userId)
+              .maybeSingle();
+          senderName = senderData?['display_name'] ?? '誰か';
+        } catch (_) {}
+
+        final itemName = item['name'] as String? ?? 'アイテム';
+        final karmaInfo =
+            karmaChange < 0 ? '\n😈 業値が${karmaChange.abs()}低下しました…' : '';
+
+        // 統合通知テーブルに追加（ベルアイコンに反映される）
+        try {
+          await supabase.from('notifications').insert({
+            'recipient_id': widget.mealOwnerId,
+            'sender_id': userId,
+            'notification_type': 'item_usage',
+            'content': {
+              'meal_id': widget.mealId,
+              'item_id': itemId,
+              'effect_percentage': effectValue,
+              'karma_change': karmaChange,
+            },
+            'message':
+                '⚡ ${senderName}さんが「$itemName」をあなたの食事に使用！カロリーが${effectValue}%増量されました！$karmaInfo',
+          });
+        } catch (e) {
+          print('⚠️ 統合通知作成エラー（スキップ）: $e');
+        }
+
+        // 旧テーブルにも互換性のため残す（失敗しても無視）
+        try {
+          await supabase.from('item_usage_notifications').insert({
+            'recipient_id': widget.mealOwnerId,
+            'sender_id': userId,
+            'item_id': itemId,
+            'meal_id': widget.mealId,
+            'effect_percentage': effectValue,
+          });
+        } catch (_) {}
       }
 
       if (mounted) {
         Navigator.pop(context, true); // 成功を返す
+        final karmaMsg = karmaChange > 0
+            ? '（業+$karmaChange）'
+            : karmaChange < 0
+                ? '（相手の業$karmaChange）'
+                : '';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
               widget.isOwnMeal
-                  ? '✅ カロリーを$effectValue%減少させました！'
-                  : '⚡ $effectValue%増量チケットを使用しました！',
+                  ? '✅ カロリーを$effectValue%減少させました！$karmaMsg'
+                  : '⚡ $effectValue%増量チケットを使用しました！$karmaMsg',
             ),
             backgroundColor: Colors.green,
           ),
